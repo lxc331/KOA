@@ -1,0 +1,100 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f05b7dd44ff31344c82a136e3bd393fa, type: 3}
+  m_Name: MotionCaptureConfig
+  m_EditorClassIdentifier: 
+  deviceCount: 9
+  boneNames:
+  - Bip01 L UpperArm
+  - Bip01 L Forearm
+  - Bip01 R UpperArm
+  - Bip01 R Forearm
+  - Bip01 Spine1
+  - Bip01 L Thigh
+  - Bip01 L Calf
+  - Bip01 R Thigh
+  - Bip01 R Calf
+  sensorMountingOffsets:
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: -90}
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: 0}
+  - {x: 0, y: 0, z: 0}
+  avatarRootName: renwu
+  defaultPort: COM9
+  defaultBaud: 115200
+  minLocalAngles:
+  - {x: -999, y: -999, z: -999}
+  - {x: 0, y: -30, z: -45}
+  - {x: -999, y: -999, z: -999}
+  - {x: 0, y: -30, z: -45}
+  - {x: -60, y: -30, z: -10}
+  - {x: -50, y: -40, z: -40}
+  - {x: -40, y: -30, z: -30}
+  - {x: -50, y: -40, z: -40}
+  - {x: -40, y: -30, z: -30}
+  maxLocalAngles:
+  - {x: 999, y: 999, z: 999}
+  - {x: 145, y: 30, z: 45}
+  - {x: 999, y: 999, z: 999}
+  - {x: 145, y: 30, z: 45}
+  - {x: 60, y: 30, z: 60}
+  - {x: 50, y: 40, z: 40}
+  - {x: 40, y: 30, z: 30}
+  - {x: 50, y: 40, z: 40}
+  - {x: 40, y: 30, z: 30}
+  anomalyEnable: 0
+  anomalyBufferSize: 10
+  anomalyThreshold: 45
+  requiredStableFrames: 20
+  maxAngularSpeedDeg: 3
+  stableAngularSpeedDegPerSec: 20
+  unstableAngularSpeedDegPerSec: 45
+  requiredStableDurationSeconds: 0.6
+  requireAllDevices: 0
+  minStableDevices: 4
+  ignoreBonesWithoutObject: 1
+  smoothSpeed: 30
+  debounceThresholdDeg: 2
+  armRestAttractionAngle: 8
+  armRestAttractionStrength: 0.18
+  armCouplingStrength: 0.12
+  armRestMicroStableDeg: 0.45
+  armRestMovingAwayThresholdDeg: 1.15
+  armLiftCouplingStrength: 0.6
+  armLiftLeadThresholdDeg: 3
+  armForearmAmplifyFactor: 1.35
+  swingClampEnabled: 1
+  armSwingLimits:
+  - {x: 80, y: 25, z: 60, w: 40}
+  - {x: 80, y: 25, z: 60, w: 40}
+  swingClampSmoothSpeed: 12
+  rootMotionEnabled: 1
+  leftFootBoneName: Bip01 L Foot
+  rightFootBoneName: Bip01 R Foot
+  rootMotionSmoothSpeed: 8
+  rootMotionMaxDrop: 1.5
+  rootMotionHorizontalEnabled: 1
+  rootMotionHorizontalSmoothSpeed: 6
+  rootMotionMaxHorizontalOffset: 0.3
+  spineYawDeadZoneDeg: 1.5
+  spineYawMaxDeg: 45
+  realTorsoHeight: 0.45
+  realThighLength: 0.45
+  realCalfLength: 0.4
+  armNoiseDeadZoneDeg: 0.8
+  forearmJitterDiag: 0
+  kneeConstraintEnabled: 1

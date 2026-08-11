@@ -1,0 +1,37 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\unity\\Project location\\LQ Game project-2\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{25BCC798-AEF0-D888-BE6A-DE5F68AE6385}|Assembly-CSharp.csproj|d:\\unity\\project location\\lq game project-2\\assets\\chengxu\\move_2.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{25BCC798-AEF0-D888-BE6A-DE5F68AE6385}|Assembly-CSharp.csproj|solutionrelative:assets\\chengxu\\move_2.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "move_2.cs",
+              "DocumentMoniker": "D:\\unity\\Project location\\LQ Game project-2\\Assets\\chengxu\\move_2.cs",
+              "RelativeDocumentMoniker": "Assets\\chengxu\\move_2.cs",
+              "ToolTip": "D:\\unity\\Project location\\LQ Game project-2\\Assets\\chengxu\\move_2.cs",
+              "RelativeToolTip": "Assets\\chengxu\\move_2.cs",
+              "ViewState": "AQIAADgAAAAAAAAAAAA4wAAAAAAAAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-04-27T10:41:21.24Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

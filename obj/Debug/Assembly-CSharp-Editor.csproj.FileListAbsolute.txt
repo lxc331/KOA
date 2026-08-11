@@ -1,0 +1,8 @@
+D:\SouceCode\UnityProject\KOA project test - lin1\Temp\bin\Debug\Assembly-CSharp-Editor.dll
+D:\SouceCode\UnityProject\KOA project test - lin1\Temp\bin\Debug\Assembly-CSharp-Editor.pdb
+D:\SouceCode\UnityProject\KOA project test - lin1\Temp\bin\Debug\Assembly-CSharp.pdb
+D:\SouceCode\UnityProject\KOA project test - lin1\obj\Debug\Assembly-CSharp-Editor.csproj.AssemblyReference.cache
+D:\SouceCode\UnityProject\KOA project test - lin1\obj\Debug\Assembly-CSharp-Editor.csproj.CoreCompileInputs.cache
+D:\SouceCode\UnityProject\KOA project test - lin1\obj\Debug\Assembly.1F1299F3.Up2Date
+D:\SouceCode\UnityProject\KOA project test - lin1\obj\Debug\Assembly-CSharp-Editor.dll
+D:\SouceCode\UnityProject\KOA project test - lin1\obj\Debug\Assembly-CSharp-Editor.pdb

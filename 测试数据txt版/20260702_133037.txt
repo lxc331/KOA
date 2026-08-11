@@ -1,0 +1,1 @@
+timestamp	device	q0	q1	q2	q3	yaw	pitch	roll	left_knee_flexion_deg	left_knee_included_deg	right_knee_flexion_deg	right_knee_included_deg

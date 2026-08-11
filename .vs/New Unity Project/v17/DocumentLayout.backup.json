@@ -1,0 +1,165 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|d:\\u3d\u6587\u4EF6\u5939\\new unity project\\assets\\chengxu\\move_2.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\chengxu\\move_2.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\hidecomponent.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\hidecomponent.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\food.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\food.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\basecomponent.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\basecomponent.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\hand.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\hand.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\uimanager.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\uimanager.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\mouse.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\mouse.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\box.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\box.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\assets\\scripts\\generate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{B2B58FB2-4462-6B0C-A872-40DD957E5FE0}|Assembly-CSharp.csproj|solutionrelative:assets\\scripts\\generate.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "move_2.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\chengxu\\move_2.cs",
+              "RelativeDocumentMoniker": "Assets\\chengxu\\move_2.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\chengxu\\move_2.cs",
+              "RelativeToolTip": "Assets\\chengxu\\move_2.cs",
+              "ViewState": "AQIAAO4CAAAAAAAAAAAIwFIBAABPAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-11-18T16:45:19.477Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "HideComponent.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\HideComponent.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\HideComponent.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\HideComponent.cs",
+              "RelativeToolTip": "Assets\\Scripts\\HideComponent.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAAAYAAAABAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-22T11:42:53.239Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 8,
+              "Title": "Generate.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Generate.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\Generate.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Generate.cs",
+              "RelativeToolTip": "Assets\\Scripts\\Generate.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAABoAAAALAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T14:36:37.422Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "Box.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Box.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\Box.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Box.cs",
+              "RelativeToolTip": "Assets\\Scripts\\Box.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAABAAAAAoAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T14:32:31.612Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "Mouse.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Mouse.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\Mouse.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Mouse.cs",
+              "RelativeToolTip": "Assets\\Scripts\\Mouse.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAABcAAAATAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T08:57:26.95Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "UIManager.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\UIManager.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\UIManager.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\UIManager.cs",
+              "RelativeToolTip": "Assets\\Scripts\\UIManager.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAADYAAAAaAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T08:48:56.113Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "BaseComponent.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\BaseComponent.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\BaseComponent.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\BaseComponent.cs",
+              "RelativeToolTip": "Assets\\Scripts\\BaseComponent.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAAAsAAAAgAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T08:48:04.925Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "Hand.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Hand.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\Hand.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Hand.cs",
+              "RelativeToolTip": "Assets\\Scripts\\Hand.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAAA0AAAAFAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T08:41:43.15Z"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "Food.cs",
+              "DocumentMoniker": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Food.cs",
+              "RelativeDocumentMoniker": "Assets\\Scripts\\Food.cs",
+              "ToolTip": "D:\\u3d\u6587\u4EF6\u5939\\New Unity Project\\Assets\\Scripts\\Food.cs",
+              "RelativeToolTip": "Assets\\Scripts\\Food.cs",
+              "ViewState": "AQIAAAAAAAAAAAAAAAAAABoAAAAWAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2024-10-18T08:37:54.154Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
