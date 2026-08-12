@@ -56,6 +56,9 @@ public class TelemetryLogger : IDisposable
         public long SourceDuplicateFrames;
         public long SourceOutOfOrderFrames;
         public long DuplicateLogicalIdFrames;
+        public float ReceiveFrameRateHz;
+        public float SourceReportedFrameRateHz;
+        public float SourceDeliveryPercent;
         public float Q0;
         public float Q1;
         public float Q2;
@@ -156,6 +159,9 @@ public class TelemetryLogger : IDisposable
         long sourceDuplicateFrames,
         long sourceOutOfOrderFrames,
         long duplicateLogicalIdFrames,
+        float receiveFrameRateHz,
+        float sourceReportedFrameRateHz,
+        float sourceDeliveryPercent,
         float leftElbowFlexionDeg,
         float rightElbowFlexionDeg,
         float leftKneeFlexionDeg,
@@ -209,6 +215,9 @@ public class TelemetryLogger : IDisposable
             SourceDuplicateFrames = sourceDuplicateFrames,
             SourceOutOfOrderFrames = sourceOutOfOrderFrames,
             DuplicateLogicalIdFrames = duplicateLogicalIdFrames,
+            ReceiveFrameRateHz = receiveFrameRateHz,
+            SourceReportedFrameRateHz = sourceReportedFrameRateHz,
+            SourceDeliveryPercent = sourceDeliveryPercent,
             Q0 = q.x,
             Q1 = q.y,
             Q2 = q.z,
@@ -597,6 +606,9 @@ public class TelemetryLogger : IDisposable
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.SourceDuplicateFrames, 0);
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.SourceOutOfOrderFrames, 0);
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.DuplicateLogicalIdFrames, 0);
+                WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.ReceiveFrameRateHz, 2);
+                WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.SourceReportedFrameRateHz, 2);
+                WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.SourceDeliveryPercent, 2);
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.Q0, 3);
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.Q1, 3);
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.Q2, 3);
@@ -641,6 +653,9 @@ public class TelemetryLogger : IDisposable
             "源端累计重复帧",
             "源端累计乱序帧",
             "重复逻辑ID冲突",
+            "Unity实际接收Hz",
+            "控制板实际发送Hz",
+            "链路到达率(%)",
             "四元数X",
             "四元数Y",
             "四元数Z",

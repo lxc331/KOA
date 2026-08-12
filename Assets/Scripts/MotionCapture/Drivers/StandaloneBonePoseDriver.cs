@@ -30,6 +30,13 @@ public sealed class StandaloneBonePoseDriver
         hasSmoothedLocal = false;
     }
 
+    /// <summary>只清除输出平滑历史，保留本次标定参考与骨骼偏移。</summary>
+    public void ResetSmoothingState()
+    {
+        smoothedLocal = Quaternion.identity;
+        hasSmoothedLocal = false;
+    }
+
     public bool TryCalibrate(
         Quaternion sensorQuaternion,
         Transform bone,

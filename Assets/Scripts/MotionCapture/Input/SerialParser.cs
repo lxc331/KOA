@@ -50,6 +50,8 @@ public class SerialParser
     private readonly long[] sourceOutOfOrderFrameCount = new long[MAX_DEVICE_COUNT];
     private readonly long[] sourceRestartCount = new long[MAX_DEVICE_COUNT];
     private readonly long[] duplicateLogicalIdCount = new long[MAX_DEVICE_COUNT];
+    private readonly long[] sourceAcceptedFrameCount = new long[MAX_DEVICE_COUNT];
+    private readonly float[] sourceReportedFrameRateHz = new float[MAX_DEVICE_COUNT];
 
     public int ParityErrorCount { get { return parityErrorCount; } }
     public int FrameErrorCount { get { return frameErrorCount; } }
@@ -115,6 +117,8 @@ public class SerialParser
             sourceOutOfOrderFrameCount[i] = 0;
             sourceRestartCount[i] = 0;
             duplicateLogicalIdCount[i] = 0;
+            sourceAcceptedFrameCount[i] = 0;
+            sourceReportedFrameRateHz[i] = 0f;
         }
     }
 
@@ -136,6 +140,8 @@ public class SerialParser
             sourceOutOfOrderFrameCount[i] = 0;
             sourceRestartCount[i] = 0;
             duplicateLogicalIdCount[i] = 0;
+            sourceAcceptedFrameCount[i] = 0;
+            sourceReportedFrameRateHz[i] = 0f;
         }
         lock (parseBufferLock) { parseBuffer.Clear(); }
         checksumFailCount = 0;
@@ -513,6 +519,7 @@ public class SerialParser
             hasLastSourceSequence[deviceId] = true;
             lastSourceSequence[deviceId] = sourceSequence;
             lastSenderTickMs[deviceId] = senderTickMs;
+            sourceAcceptedFrameCount[deviceId]++;
             return true;
         }
 
@@ -523,6 +530,8 @@ public class SerialParser
             sourceRestartCount[deviceId]++;
             lastSourceSequence[deviceId] = sourceSequence;
             lastSenderTickMs[deviceId] = senderTickMs;
+            sourceAcceptedFrameCount[deviceId]++;
+            sourceReportedFrameRateHz[deviceId] = 0f;
             return true;
         }
 
@@ -540,8 +549,23 @@ public class SerialParser
         if (delta > 1u)
             sourceLostFrameCount[deviceId] += delta - 1u;
 
+        // V2发送端序号与发送端毫秒计时同时推进。即使中间无线帧丢失，
+        // delta/tickDelta仍可估算控制板实际发送Hz，从而与Unity实际接收Hz分离诊断。
+        uint tickDelta = unchecked(senderTickMs - lastSenderTickMs[deviceId]);
+        if (tickDelta > 0u && tickDelta < 600000u)
+        {
+            float sampleHz = delta * 1000f / tickDelta;
+            if (sampleHz > 0.05f && sampleHz < 200f)
+            {
+                sourceReportedFrameRateHz[deviceId] = sourceReportedFrameRateHz[deviceId] <= 0f
+                    ? sampleHz
+                    : Mathf.Lerp(sourceReportedFrameRateHz[deviceId], sampleHz, 0.18f);
+            }
+        }
+
         lastSourceSequence[deviceId] = sourceSequence;
         lastSenderTickMs[deviceId] = senderTickMs;
+        sourceAcceptedFrameCount[deviceId]++;
         return true;
     }
 
@@ -661,4 +685,13 @@ public class SerialParser
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? sourceRestartCount[deviceId] : 0L;
     public long GetDuplicateLogicalIdCount(int deviceId) =>
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? duplicateLogicalIdCount[deviceId] : 0L;
+    public float GetSourceReportedFrameRateHz(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? sourceReportedFrameRateHz[deviceId] : 0f;
+    public float GetSourceDeliveryPercent(int deviceId)
+    {
+        if (deviceId < 0 || deviceId >= MAX_DEVICE_COUNT) return 0f;
+        long accepted = sourceAcceptedFrameCount[deviceId];
+        long expected = accepted + sourceLostFrameCount[deviceId];
+        return expected > 0L ? Mathf.Clamp01((float)accepted / expected) * 100f : 0f;
+    }
 }

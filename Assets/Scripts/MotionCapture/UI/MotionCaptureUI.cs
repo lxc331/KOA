@@ -133,8 +133,8 @@ public class MotionCaptureUI : MonoBehaviour
 
     // 窗口最小尺寸限制
     private const float MIN_CTRL_W = 260f, MIN_CTRL_H = 620f;
-    private const float MIN_TELE_W = 900f, MIN_TELE_H = 320f;
-    private const float TELE_DEFAULT_W = 900f, TELE_DEFAULT_H = 320f;
+    private const float MIN_TELE_W = 1120f, MIN_TELE_H = 340f;
+    private const float TELE_DEFAULT_W = 1120f, TELE_DEFAULT_H = 340f;
     private const float TELE_MARGIN = 20f;     // 遥测窗口距屏幕边缘的边距
     private const float KNEE_WINDOW_W = 500f;
     private const float KNEE_WINDOW_H = 430f;
@@ -464,8 +464,8 @@ public class MotionCaptureUI : MonoBehaviour
         int deviceCount = controller.Config.deviceCount;
 
         // V1表头：恢复完整四元数、欧拉角和逐路状态。
-        string[] headers = { "传感器/部位", "q0", "q1", "q2", "q3", "yaw", "pitch", "roll", "通信", "稳定", "标定结果", "Hz", "帧龄ms", "源丢", "重复", "乱序" };
-        float[] widths = { 104f, 45f, 45f, 45f, 45f, 45f, 45f, 45f, 52f, 52f, 74f, 48f, 62f, 52f, 48f, 48f };
+        string[] headers = { "传感器/部位", "q0", "q1", "q2", "q3", "yaw", "pitch", "roll", "通信", "运行", "稳定", "标定结果", "接收Hz", "源Hz", "帧龄ms", "到达%", "源丢", "重复", "乱序", "故障" };
+        float[] widths = { 104f, 45f, 45f, 45f, 45f, 45f, 45f, 45f, 52f, 56f, 52f, 74f, 55f, 55f, 62f, 55f, 52f, 48f, 48f, 58f };
         float headerH = 20f, headerY = 24f, rowH = 24f, startX = 8f;
         float startY = headerY + headerH + 4f;
 
@@ -489,6 +489,7 @@ public class MotionCaptureUI : MonoBehaviour
             Vector3 euler = q.eulerAngles;
 
             bool online = controller.IsSensorOnline(i);
+            bool runtimeReady = controller.IsSensorRuntimeReady(i);
             bool stable = controller.IsSensorStable(i);
             double ageMs = controller.GetSensorFrameAgeMilliseconds(i);
             string ageText = double.IsInfinity(ageMs) ? "--" : Mathf.Min(9999f, (float)ageMs).ToString("F0");
@@ -507,19 +508,33 @@ public class MotionCaptureUI : MonoBehaviour
             GUI.Label(new Rect(x, y, widths[7], rowH), euler.x.ToString("F1"), tableCellStyle); x += widths[7];
             GUI.Label(new Rect(x, y, widths[8], rowH), online ? "在线" : "离线",
                 online ? statusReadyStyle : statusOfflineStyle); x += widths[8];
-            GUI.Label(new Rect(x, y, widths[9], rowH), stable ? "稳定" : "等待",
-                stable ? statusReadyStyle : statusWaitingStyle); x += widths[9];
-            GUI.Label(new Rect(x, y, widths[10], rowH),
-                GetCalibrationStateText(calibrationState), GetCalibrationStateStyle(calibrationState)); x += widths[10];
+            GUI.Label(new Rect(x, y, widths[9], rowH), controller.GetSensorRuntimeReadinessLabel(i),
+                runtimeReady ? statusReadyStyle : statusWaitingStyle); x += widths[9];
+            GUI.Label(new Rect(x, y, widths[10], rowH), stable ? "稳定" : "等待",
+                stable ? statusReadyStyle : statusWaitingStyle); x += widths[10];
             GUI.Label(new Rect(x, y, widths[11], rowH),
-                controller.GetSensorFrameRateHz(i).ToString("F1"), tableCellStyle); x += widths[11];
-            GUI.Label(new Rect(x, y, widths[12], rowH), ageText, tableCellStyle); x += widths[12];
+                GetCalibrationStateText(calibrationState), GetCalibrationStateStyle(calibrationState)); x += widths[11];
+            GUI.Label(new Rect(x, y, widths[12], rowH),
+                controller.GetSensorFrameRateHz(i).ToString("F1"), tableCellStyle); x += widths[12];
+            float sourceHz = controller.GetSensorSourceFrameRateHz(i);
             GUI.Label(new Rect(x, y, widths[13], rowH),
-                controller.GetSensorSourceLostFrameCount(i).ToString(), tableCellStyle); x += widths[13];
-            GUI.Label(new Rect(x, y, widths[14], rowH),
-                controller.GetSensorSourceDuplicateFrameCount(i).ToString(), tableCellStyle); x += widths[14];
+                sourceHz > 0f ? sourceHz.ToString("F1") : "--", tableCellStyle); x += widths[13];
+            GUI.Label(new Rect(x, y, widths[14], rowH), ageText, tableCellStyle); x += widths[14];
+            float delivery = controller.GetSensorDeliveryPercent(i);
             GUI.Label(new Rect(x, y, widths[15], rowH),
-                controller.GetSensorSourceOutOfOrderFrameCount(i).ToString(), tableCellStyle);
+                sourceHz > 0f ? delivery.ToString("F0") : "--", tableCellStyle); x += widths[15];
+            GUI.Label(new Rect(x, y, widths[16], rowH),
+                controller.GetSensorSourceLostFrameCount(i).ToString(), tableCellStyle); x += widths[16];
+            GUI.Label(new Rect(x, y, widths[17], rowH),
+                controller.GetSensorSourceDuplicateFrameCount(i).ToString(), tableCellStyle); x += widths[17];
+            GUI.Label(new Rect(x, y, widths[18], rowH),
+                controller.GetSensorSourceOutOfOrderFrameCount(i).ToString(), tableCellStyle); x += widths[18];
+            int faultCount = controller.GetSensorRuntimeFaultCount(i);
+            string faultText = controller.LastRuntimeFaultSensorIndex == i
+                ? $"触发#{faultCount}"
+                : faultCount > 0 ? $"#{faultCount}" : "--";
+            GUI.Label(new Rect(x, y, widths[19], rowH), faultText,
+                controller.LastRuntimeFaultSensorIndex == i ? statusFailedStyle : tableCellStyle);
         }
 
         // 保持V1表格尺寸，只增加一行紧凑链路摘要。标定结果是历史锁存，通信是当前状态。
@@ -531,8 +546,13 @@ public class MotionCaptureUI : MonoBehaviour
         GUI.Label(new Rect(10f, 294f, telemetryWindowRect.width - 20f, 20f),
             $"源端：丢 {controller.SourceLostFrameCount}  重复 {controller.SourceDuplicateFrameCount}  " +
             $"乱序 {controller.SourceOutOfOrderFrameCount}  CRC错 {controller.Crc16FailCount}  " +
-            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜标定自适应≤4s  驱动严格1s",
+            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜标定自适应≤4s  运行闸门=帧龄≤1s/接收≥5Hz/新帧≥3",
             tableCellStyle);
+        GUI.Label(new Rect(10f, 314f, telemetryWindowRect.width - 20f, 20f),
+            string.IsNullOrEmpty(controller.LastRuntimeFaultSummary)
+                ? "上次运行故障：无"
+                : $"上次运行故障：{controller.LastRuntimeFaultSummary}",
+            string.IsNullOrEmpty(controller.LastRuntimeFaultSummary) ? tableCellStyle : statusFailedStyle);
 
         // 固定左下角时，不允许拖动和缩放；关闭 lockTelemetryToBottomLeft 后恢复可拖动/缩放
         if (!lockTelemetryToBottomLeft)
@@ -661,6 +681,14 @@ public class MotionCaptureUI : MonoBehaviour
         {
             label = "未连接";
         }
+        else if (controller.IsCalibrationLockedWaitingForRuntime)
+        {
+            label = "标定已锁定\n等待运行数据";
+        }
+        else if (controller.IsRuntimeDriveSuspended)
+        {
+            label = "驱动已暂停\n等待链路恢复";
+        }
         else if (!state.HasAnyData)
         {
             label = "等待数据";
@@ -719,7 +747,8 @@ public class MotionCaptureUI : MonoBehaviour
         }
 
         // V8由Controller锁存当前实际在线组合；缺席传感器不参与门控。
-        bool canStart = state.IsConnected && state.HasAnyData && state.IsStable && !countdownActive;
+        bool canStart = state.IsConnected && state.HasAnyData && state.IsStable && !countdownActive &&
+                        !controller.IsWaitingForRuntimeData;
         var tex = canStart ? btnCircleReady : btnCircleWaiting;
 
         int size = START_BUTTON_SIZE;

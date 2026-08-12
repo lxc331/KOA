@@ -12,7 +12,7 @@ using UnityEngine;
 /// </summary>
 public class MotionCaptureController : MonoBehaviour
 {
-    public const string BuildVersion = "V8.13-ADAPTIVE-CALIBRATION-20260811-A";
+    public const string BuildVersion = "V8.14-RUNTIME-GATE-TELEMETRY-20260812-A";
     private const int CalibrationSamplesPerRequiredSensor = 5;
 
     public enum SensorCalibrationUiState
@@ -97,6 +97,12 @@ public class MotionCaptureController : MonoBehaviour
     [SerializeField, Range(0.2f, 2f)] private float centralizedDeviceTimeoutSeconds = 0.500f;
     [Tooltip("人物驱动阶段的严格新鲜度门限。超过该时间立即暂停骨骼驱动，但保留已完成标定等待链路恢复。")]
     [SerializeField, Range(0.5f, 2f)] private float runtimeDeviceTimeoutSeconds = 1.000f;
+    [Tooltip("九路进入人物驱动前的最低实际接收频率。目标固件为10Hz；低于此值只保留标定和诊断，不消费姿态。")]
+    [SerializeField, Range(2f, 9f)] private float runtimeMinimumFrameRateHz = 5.0f;
+    [Tooltip("标定锁定或运行暂停后，每路至少再收到多少个唯一新帧才允许进入/恢复驱动。")]
+    [SerializeField, Range(2, 8)] private int runtimeReadinessMinimumUniqueFrames = 3;
+    [Tooltip("九路同时满足帧龄、频率和新帧数后，还需连续保持多久才进入人物驱动。")]
+    [SerializeField, Range(0.5f, 2f)] private float runtimeReadinessHoldSeconds = 1.0f;
     [Tooltip("插值两侧帧间隔超过该值时禁止跨空洞插值，改用最近一帧。")]
     [SerializeField, Range(0.02f, 0.5f)] private float centralizedMaxInterpolationGapSeconds = 0.120f;
 
@@ -267,6 +273,11 @@ public class MotionCaptureController : MonoBehaviour
     }
     public string CalibrationCountdownStatus => calibrationCountdownStatus;
     public bool AutomaticCalibrationEnabled => automaticCalibrationEnabled;
+    public bool IsCalibrationLockedWaitingForRuntime => calibrationLockedWaitingForRuntime;
+    public bool IsRuntimeDriveSuspended => runtimeDriveSuspended;
+    public bool IsWaitingForRuntimeData => calibrationLockedWaitingForRuntime || runtimeDriveSuspended;
+    public string LastRuntimeFaultSummary => lastRuntimeFaultSummary ?? string.Empty;
+    public int LastRuntimeFaultSensorIndex => lastRuntimeFaultSensorIndex;
     public float AutomaticCalibrationHoldRemaining
     {
         get
@@ -320,8 +331,14 @@ public class MotionCaptureController : MonoBehaviour
     private string calibrationCountdownStatus = string.Empty;
     private float automaticCalibrationStableSince = -1f;
     private float automaticCalibrationNextAttemptTime;
+    // 标定完成和运行中掉线是两个不同状态。二者都停止消费姿态，但绝不清空DataHub诊断数据。
+    private bool calibrationLockedWaitingForRuntime;
     private bool runtimeDriveSuspended;
     private float runtimeRecoveryFreshSince = -1f;
+    private long[] runtimeReadinessStartSequences;
+    private int[] runtimeFaultCounts;
+    private int lastRuntimeFaultSensorIndex = -1;
+    private string lastRuntimeFaultSummary = string.Empty;
     private bool[] sensorCalibrationSucceeded;
     private bool[] sensorCalibrationFailed;
     private Quaternion[] calibrationPreviousAccepted;
@@ -497,6 +514,9 @@ public class MotionCaptureController : MonoBehaviour
         centralizedDeviceTimeoutSeconds = 0.500f;
         calibrationSampleMaxAgeSeconds = 4.000f;
         runtimeDeviceTimeoutSeconds = 1.000f;
+        runtimeMinimumFrameRateHz = 5.000f;
+        runtimeReadinessMinimumUniqueFrames = 3;
+        runtimeReadinessHoldSeconds = 1.000f;
         kneeMeasurementMaxFreshAgeSeconds = 0.500f;
 
         // 保留Inspector中的驱动选择，不再在预设函数里强制开启两条腿或锁死小腿。
@@ -538,7 +558,7 @@ public class MotionCaptureController : MonoBehaviour
         Application.runInBackground = true;
 
         Debug.LogWarning("\n==================================================\n" +
-            "[V8.13 ACTIVE] MotionCaptureController.Awake\n" +
+            "[V8.14 ACTIVE] MotionCaptureController.Awake\n" +
             "Build=" + BuildVersion + "\n" +
             "模式：强制选择01~09，九路全部参与稳定检查、标定和驱动\n" +
             "上肢：01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂\n" +
@@ -549,6 +569,8 @@ public class MotionCaptureController : MonoBehaviour
             "低频：01/03/06/08启用200ms/7°限幅短时预测；积压仍只取最新姿态\n" +
             "膝角：成对在线时按时间配对并提取铰链分量\n" +
             "数据：SerialParser原始校验 -> MotionDataHub最新快照/超时 -> 单一快照分发\n" +
+            "运行闸门：标定先锁定；九路各自达到1秒帧龄、5Hz和3个新帧后才驱动\n" +
+            "故障隔离：暂停只恢复骨骼，不清空DataHub、Hz、帧龄和源端丢帧诊断\n" +
             "==================================================");
 
         if (config == null)
@@ -572,6 +594,8 @@ public class MotionCaptureController : MonoBehaviour
         calibrationRestartCounts = new int[config.deviceCount];
         calibrationLastStepDeg = new float[config.deviceCount];
         calibrationLastConsumedSequences = new long[config.deviceCount];
+        runtimeReadinessStartSequences = new long[config.deviceCount];
+        runtimeFaultCounts = new int[config.deviceCount];
         standaloneSamplingQuaternionSums = new Vector4[config.deviceCount];
         standaloneSamplingHemisphereReferences = new Quaternion[config.deviceCount];
     }
@@ -709,7 +733,7 @@ public class MotionCaptureController : MonoBehaviour
 
         BindUIEvents();
 
-        Debug.LogWarning($"[V8.13 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；运行门限={runtimeDeviceTimeoutSeconds:F1}秒；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
+        Debug.LogWarning($"[V8.14 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；运行闸门=帧龄≤{runtimeDeviceTimeoutSeconds:F1}s、接收Hz≥{runtimeMinimumFrameRateHz:F1}、新帧≥{runtimeReadinessMinimumUniqueFrames}、连续{runtimeReadinessHoldSeconds:F1}s；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
     }
 
     private void Update()
@@ -771,7 +795,15 @@ public class MotionCaptureController : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (State == null || !State.IsDriving) return;
+        if (State == null) return;
+        if (!State.IsDriving)
+        {
+            // 等待运行数据或链路暂停时只恢复人物姿势；绝不调用processor.Reset，
+            // 因而九路Hz、帧龄、最后四元数和协议错误计数会继续保留并更新。
+            if (IsWaitingForRuntimeData)
+                ResetAllBonesToRest();
+            return;
+        }
         if (bones == null || restLocalRotations == null) return;
 
         ResetUndrivenBonesToRest();
@@ -934,8 +966,7 @@ public class MotionCaptureController : MonoBehaviour
     private void HandleConnect(string port, int baud)
     {
         selectedBaud = baud;
-        runtimeDriveSuspended = false;
-        runtimeRecoveryFreshSince = -1f;
+        ResetRuntimeLinkState(true);
         ResetAutomaticCalibrationState();
         ResetArmSamplingState();
         ClearSensorCalibrationResults();
@@ -966,8 +997,7 @@ public class MotionCaptureController : MonoBehaviour
 
     private void HandleDisconnect()
     {
-        runtimeDriveSuspended = false;
-        runtimeRecoveryFreshSince = -1f;
+        ResetRuntimeLinkState(true);
         CancelCalibrationCountdown("已断开连接");
         ResetAutomaticCalibrationState();
         ClearSensorCalibrationResults();
@@ -1006,7 +1036,7 @@ public class MotionCaptureController : MonoBehaviour
             return;
         }
 
-        if (State.IsDriving || calibrationCountdownActive)
+        if (State.IsDriving || calibrationCountdownActive || IsWaitingForRuntimeData)
             return;
 
         if (!CalibrationInputsStable(out string reason))
@@ -1031,7 +1061,7 @@ public class MotionCaptureController : MonoBehaviour
     /// </summary>
     private void UpdateAutomaticCalibration()
     {
-        if (runtimeDriveSuspended)
+        if (IsWaitingForRuntimeData)
         {
             automaticCalibrationStableSince = -1f;
             return;
@@ -1263,6 +1293,24 @@ public class MotionCaptureController : MonoBehaviour
         automaticCalibrationNextAttemptTime = 0f;
     }
 
+    private void ResetRuntimeLinkState(bool clearFaultHistory)
+    {
+        calibrationLockedWaitingForRuntime = false;
+        runtimeDriveSuspended = false;
+        runtimeRecoveryFreshSince = -1f;
+        if (runtimeReadinessStartSequences != null)
+        {
+            for (int i = 0; i < runtimeReadinessStartSequences.Length; i++)
+                runtimeReadinessStartSequences[i] = -1L;
+        }
+
+        if (!clearFaultHistory) return;
+        lastRuntimeFaultSensorIndex = -1;
+        lastRuntimeFaultSummary = string.Empty;
+        if (runtimeFaultCounts != null)
+            Array.Clear(runtimeFaultCounts, 0, runtimeFaultCounts.Length);
+    }
+
     private void ClearSensorCalibrationResults()
     {
         if (sensorCalibrationSucceeded == null && config != null)
@@ -1299,9 +1347,9 @@ public class MotionCaptureController : MonoBehaviour
     public bool IsSensorOnline(int sensorIndex)
     {
         if (processor == null || !IndexInRange(sensorIndex)) return false;
-        return (State != null && State.IsDriving) || runtimeDriveSuspended
-            ? IsSensorFreshForDriving(sensorIndex)
-            : processor.IsDeviceOnline(sensorIndex);
+        // “通信在线”只表达DataHub当前链路状态；运行阶段的严格门限单独显示，
+        // 避免一台设备触发暂停后把其余八台错误显示为离线。
+        return processor.IsDeviceOnline(sensorIndex);
     }
 
     public bool IsSensorStable(int sensorIndex) =>
@@ -1311,6 +1359,38 @@ public class MotionCaptureController : MonoBehaviour
         processor != null && IndexInRange(sensorIndex)
             ? processor.GetDeviceFrameRateHz(sensorIndex)
             : 0f;
+
+    public float GetSensorSourceFrameRateHz(int sensorIndex) =>
+        Serial?.Parser != null && IndexInRange(sensorIndex)
+            ? Serial.Parser.GetSourceReportedFrameRateHz(sensorIndex)
+            : 0f;
+
+    public float GetSensorDeliveryPercent(int sensorIndex) =>
+        Serial?.Parser != null && IndexInRange(sensorIndex)
+            ? Serial.Parser.GetSourceDeliveryPercent(sensorIndex)
+            : 0f;
+
+    public bool IsSensorRuntimeReady(int sensorIndex)
+    {
+        if (!IsSensorRequiredForCurrentDrive(sensorIndex)) return false;
+        return !TryGetSensorRuntimeIssue(sensorIndex, IsWaitingForRuntimeData, out _);
+    }
+
+    public string GetSensorRuntimeReadinessLabel(int sensorIndex)
+    {
+        if (!IsSensorRequiredForCurrentDrive(sensorIndex)) return "--";
+        if (!TryGetSensorRuntimeIssue(sensorIndex, IsWaitingForRuntimeData, out string issue))
+            return "就绪";
+        if (issue.StartsWith("帧龄", StringComparison.Ordinal) || issue == "无有效帧") return "超时";
+        if (issue.StartsWith("接收", StringComparison.Ordinal)) return "低频";
+        if (issue.StartsWith("新帧", StringComparison.Ordinal)) return issue;
+        return "等待";
+    }
+
+    public int GetSensorRuntimeFaultCount(int sensorIndex) =>
+        runtimeFaultCounts != null && sensorIndex >= 0 && sensorIndex < runtimeFaultCounts.Length
+            ? runtimeFaultCounts[sensorIndex]
+            : 0;
 
     public float GetSensorCalibrationFreshnessTimeoutSeconds(int sensorIndex) =>
         GetCalibrationFreshnessTimeoutSeconds(sensorIndex);
@@ -1798,6 +1878,7 @@ public class MotionCaptureController : MonoBehaviour
     {
         calibrationCountdownActive = false;
         calibrationSamplingActive = false;
+        calibrationLockedWaitingForRuntime = false;
         runtimeDriveSuspended = false;
         runtimeRecoveryFreshSince = -1f;
 
@@ -1963,36 +2044,26 @@ public class MotionCaptureController : MonoBehaviour
             kneeMeasurementCalibrationDeadlineTime = -1f;
         }
 
-        if (!AreAllRequiredDriveSensorsFresh(out string driveFreshnessReason))
-        {
-            runtimeDriveSuspended = true;
-            runtimeRecoveryFreshSince = -1f;
-            State.SetDriving(false);
-            processor?.Reset(bones, restLocalRotations);
-            ClearDeviceAvailability();
-            calibrationCountdownStatus =
-                $"各路标定已分别完成，等待1秒运行门限内的新帧：{driveFreshnessReason}";
-            Debug.LogWarning($"[CalibrationComplete/DrivePending] {calibrationCountdownStatus}");
-            return;
-        }
+        // 标定成功只锁存标定结果，不在同一帧直接驱动。九路必须从此刻起分别再产生
+        // 足够的新帧，并连续满足1秒帧龄与最低接收Hz，避免低频轮询的偶然重合窗口误启动。
+        State.SetDriving(false);
+        calibrationLockedWaitingForRuntime = true;
+        runtimeDriveSuspended = false;
+        runtimeRecoveryFreshSince = -1f;
+        CaptureRuntimeReadinessBaseline();
+        ResetAllBonesToRest();
+        ResetDriverSmoothingWithoutClearingCalibration();
 
-        State.SetDriving(true);
-        calibrationCountdownStatus = "标定完成，已开始运动";
+        string initialGateReason;
+        AreAllRequiredDriveSensorsRuntimeReady(true, out initialGateReason, out _);
+        calibrationCountdownStatus =
+            $"标定已锁定，等待九路运行数据：{initialGateReason}";
 
-        if (logger != null && logger.SaveEnabled && !logger.IsLogging)
-        {
-            if (!logger.Open())
-                Debug.LogWarning("[Excel记录] 人物已开始驱动，但自动开始记录失败，请检查导出目录。");
-        }
+        // 从标定锁定时开始记录通信诊断，使“始终达不到运行门限”的会话也能导出分析。
+        if (logger != null && logger.SaveEnabled && !logger.IsLogging && !logger.Open())
+            Debug.LogWarning("[Excel记录] 标定已锁定，但通信诊断记录启动失败，请检查导出目录。");
 
-        Debug.LogWarning(
-            $"[V8.13 ACTIVE][DRIVING STARTED] Build={BuildVersion}；" +
-            $"01={leftArmParticipatesInCalibration},02={IsArmSensorRequiredForCalibration(LeftForeArmIndex)}," +
-            $"03={rightArmParticipatesInCalibration},04={IsArmSensorRequiredForCalibration(RightForeArmIndex)},05={IsGenericStandaloneParticipant((int)BoneIndex.Spine)}," +
-            $"06={leftLegParticipatesInCalibration},07配对={leftCalfParticipatesInCalibration},07单独={leftStandaloneCalfParticipatesInCalibration}," +
-            $"08={rightLegParticipatesInCalibration},09配对={rightCalfParticipatesInCalibration},09单独={rightStandaloneCalfParticipatesInCalibration}," +
-            $"02Arm组={IsArmSensorRequiredForCalibration(LeftForeArmIndex)},04Arm组={IsArmSensorRequiredForCalibration(RightForeArmIndex)},05躯干={IsGenericStandaloneParticipant((int)BoneIndex.Spine)}；" +
-            "全身诊断要求01~09全部在线稳定后进入驱动");
+        Debug.LogWarning($"[CalibrationLocked/RuntimePending] {calibrationCountdownStatus}");
     }
 
     private void CancelCalibrationCountdown(string reason)
@@ -2040,8 +2111,7 @@ public class MotionCaptureController : MonoBehaviour
 
     private void HandleReset()
     {
-        runtimeDriveSuspended = false;
-        runtimeRecoveryFreshSince = -1f;
+        ResetRuntimeLinkState(true);
         CancelCalibrationCountdown("已重置");
         ResetAutomaticCalibrationState();
         ResetArmSamplingState();
@@ -2238,6 +2308,9 @@ public class MotionCaptureController : MonoBehaviour
             hasV2 ? parser.GetSourceDuplicateFrameCount(deviceId) : 0L,
             hasV2 ? parser.GetSourceOutOfOrderFrameCount(deviceId) : 0L,
             hasV2 ? parser.GetDuplicateLogicalIdCount(deviceId) : 0L,
+            GetSensorFrameRateHz(deviceId),
+            hasV2 ? parser.GetSourceReportedFrameRateHz(deviceId) : 0f,
+            hasV2 ? parser.GetSourceDeliveryPercent(deviceId) : 0f,
             LeftElbowFlexionAngleDeg,
             RightElbowFlexionAngleDeg,
             LeftKneeFlexionAngleDeg,
@@ -2520,6 +2593,7 @@ public class MotionCaptureController : MonoBehaviour
             return false;
 
         string reason = string.Empty;
+        int faultSensorIndex = -1;
         if (Serial == null || !Serial.IsConnected)
         {
             reason = "串口连接意外中断";
@@ -2528,85 +2602,81 @@ public class MotionCaptureController : MonoBehaviour
         {
             reason = "检测到重复设备ID，不同硬件正在竞争同一姿态通道";
         }
-        else if (processor != null && config != null)
-        {
-            for (int sensorIndex = 0; sensorIndex < config.deviceCount; sensorIndex++)
-            {
-                if (!IsSensorRequiredForCurrentDrive(sensorIndex))
-                    continue;
-                if (IsSensorFreshForDriving(sensorIndex))
-                    continue;
-
-                double ageMs = GetSensorFrameAgeMilliseconds(sensorIndex);
-                string ageText = double.IsInfinity(ageMs) ? "无有效帧" : $"{ageMs:F0}ms无新帧";
-                reason = $"{sensorIndex + 1:00}{GetSensorRoleLabel(sensorIndex)}超过运行门限" +
-                         $"{runtimeDeviceTimeoutSeconds:F1}s（{ageText}）";
-                break;
-            }
-        }
+        else if (AreAllRequiredDriveSensorsRuntimeReady(false, out _, out _))
+            return false;
+        else
+            AreAllRequiredDriveSensorsRuntimeReady(false, out reason, out faultSensorIndex);
 
         if (string.IsNullOrEmpty(reason))
             return false;
 
-        StopDrivingForRuntimeLinkFault(reason);
+        StopDrivingForRuntimeLinkFault(reason, faultSensorIndex);
         return true;
     }
 
-    private void StopDrivingForRuntimeLinkFault(string reason)
+    private void StopDrivingForRuntimeLinkFault(string reason, int faultSensorIndex)
     {
-        string message = $"通信故障，已暂停驱动并清除旧姿态：{reason}；保留本次标定，等待九路新数据恢复";
+        lastRuntimeFaultSensorIndex = faultSensorIndex;
+        lastRuntimeFaultSummary = reason ?? "未知通信故障";
+        if (runtimeFaultCounts != null && faultSensorIndex >= 0 && faultSensorIndex < runtimeFaultCounts.Length)
+            runtimeFaultCounts[faultSensorIndex]++;
+
+        string message = $"通信故障，已停止旧姿态消费并恢复人物：{lastRuntimeFaultSummary}；保留标定和九路诊断，等待新数据恢复";
         Debug.LogError($"[RuntimeLinkFault] {message}");
 
         State.SetDriving(false);
+        calibrationLockedWaitingForRuntime = false;
         runtimeDriveSuspended = true;
         runtimeRecoveryFreshSince = -1f;
         calibrationCountdownActive = false;
         calibrationSamplingActive = false;
         automaticCalibrationStableSince = -1f;
-        logger?.Close();
         kneeMeasurementCalibrationDeadlineTime = -1f;
 
-        // 清空实时帧和骨骼目标，确保暂停期间绝不继续消费旧姿态；
-        // 各驱动器的标定偏移和每路成功结果保留，用于同一连接内恢复。
-        processor?.Reset(bones, restLocalRotations);
-        ClearDeviceAvailability();
+        // 只恢复人物骨骼，不清空DataHub、解析器或设备可用状态。
+        // 后续新帧仍会持续进入DataHub和Excel，但LateUpdate不会消费它们驱动人物。
+        ResetAllBonesToRest();
+        ResetDriverSmoothingWithoutClearingCalibration();
+        CaptureRuntimeReadinessBaseline();
         calibrationCountdownStatus = message;
     }
 
     private bool TryResumeSuspendedDriving()
     {
-        if (!runtimeDriveSuspended || State == null)
+        if (!IsWaitingForRuntimeData || State == null)
             return false;
 
         if (Serial == null || !Serial.IsConnected)
         {
             runtimeRecoveryFreshSince = -1f;
-            calibrationCountdownStatus = "通信暂停：串口尚未恢复连接；重新连接后将重新标定";
+            calibrationCountdownStatus = "等待运行数据：串口尚未恢复连接；诊断数据保留至手动断开/重置";
             return false;
         }
 
         if (Serial.Parser != null && Serial.Parser.DuplicateLogicalIdConflictCount > 0)
         {
             runtimeRecoveryFreshSince = -1f;
-            calibrationCountdownStatus = "通信暂停：仍存在重复设备ID，禁止恢复旧标定驱动";
+            calibrationCountdownStatus = "等待运行数据：仍存在重复设备ID，禁止进入人物驱动";
             return false;
         }
 
-        if (!AreAllRequiredDriveSensorsFresh(out string waitReason))
+        if (!AreAllRequiredDriveSensorsRuntimeReady(true, out string waitReason, out _))
         {
             runtimeRecoveryFreshSince = -1f;
-            calibrationCountdownStatus = $"通信暂停，保留标定：{waitReason}";
+            calibrationCountdownStatus = calibrationLockedWaitingForRuntime
+                ? $"标定已锁定，等待运行数据：{waitReason}"
+                : $"驱动已暂停，保留标定和诊断：{waitReason}；上次触发={lastRuntimeFaultSummary}";
             return false;
         }
 
         if (runtimeRecoveryFreshSince < 0f)
         {
             runtimeRecoveryFreshSince = Time.time;
-            calibrationCountdownStatus = "九路运行数据已恢复，确认连续新帧后自动恢复驱动";
+            calibrationCountdownStatus = $"九路运行条件已满足，连续确认{runtimeReadinessHoldSeconds:F1}秒后自动开始驱动";
             return false;
         }
 
-        if (Time.time - runtimeRecoveryFreshSince < 0.5f)
+        if (Time.time - runtimeRecoveryFreshSince < Mathf.Clamp(runtimeReadinessHoldSeconds, 0.5f, 2f))
             return false;
 
         bool driversReady = (!leftLegParticipatesInCalibration || (leftLegDriver != null && leftLegDriver.IsCalibrated)) &&
@@ -2616,16 +2686,21 @@ public class MotionCaptureController : MonoBehaviour
                             AreGenericStandaloneParticipantsCalibrated();
         if (!driversReady)
         {
+            calibrationLockedWaitingForRuntime = false;
             runtimeDriveSuspended = false;
             runtimeRecoveryFreshSince = -1f;
             calibrationCountdownStatus = "通信已恢复，但标定状态不完整，等待重新标定";
             return false;
         }
 
+        bool wasRuntimeRecovery = runtimeDriveSuspended;
+        calibrationLockedWaitingForRuntime = false;
         runtimeDriveSuspended = false;
         runtimeRecoveryFreshSince = -1f;
         State.SetDriving(true);
-        calibrationCountdownStatus = "通信已恢复，沿用本次标定继续运动";
+        calibrationCountdownStatus = wasRuntimeRecovery
+            ? "通信已恢复，沿用本次标定继续运动"
+            : "标定已锁定且九路运行数据达标，已开始运动";
         if (leftCalfParticipatesInCalibration || rightCalfParticipatesInCalibration)
         {
             TryInitializeKneeMeasurements();
@@ -2633,26 +2708,132 @@ public class MotionCaptureController : MonoBehaviour
         }
         if (logger != null && logger.SaveEnabled && !logger.IsLogging)
             logger.Open();
-        Debug.LogWarning("[RuntimeLinkRecovery] 九路数据连续恢复，沿用已锁存标定重新开始驱动");
+        Debug.LogWarning(
+            $"[V8.14][RuntimeGatePassed] Build={BuildVersion}；九路帧龄≤{runtimeDeviceTimeoutSeconds:F1}s、" +
+            $"接收Hz≥{runtimeMinimumFrameRateHz:F1}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
+            (wasRuntimeRecovery ? "沿用已锁存标定恢复驱动" : "首次进入驱动"));
         return true;
     }
 
-    private bool AreAllRequiredDriveSensorsFresh(out string reason)
+    private bool AreAllRequiredDriveSensorsRuntimeReady(
+        bool requireWarmupFrames,
+        out string reason,
+        out int firstFaultSensorIndex)
     {
         reason = string.Empty;
-        if (config == null || processor == null) return false;
+        firstFaultSensorIndex = -1;
+        if (config == null || processor == null)
+        {
+            reason = "数据处理器未初始化";
+            return false;
+        }
+
         bool anyRequired = false;
+        int issueCount = 0;
         for (int sensorIndex = 0; sensorIndex < config.deviceCount; sensorIndex++)
         {
             if (!IsSensorRequiredForCurrentDrive(sensorIndex)) continue;
             anyRequired = true;
-            if (IsSensorFreshForDriving(sensorIndex)) continue;
-            double ageMs = GetSensorFrameAgeMilliseconds(sensorIndex);
-            string ageText = double.IsInfinity(ageMs) ? "无新帧" : $"帧龄{ageMs:F0}ms";
-            reason = $"等待{sensorIndex + 1:00}{GetSensorRoleLabel(sensorIndex)}（{ageText}）";
+            if (!TryGetSensorRuntimeIssue(sensorIndex, requireWarmupFrames, out string issue))
+                continue;
+
+            if (firstFaultSensorIndex < 0)
+                firstFaultSensorIndex = sensorIndex;
+            if (issueCount > 0)
+                reason += "；";
+            reason += $"{sensorIndex + 1:00}{GetSensorRoleLabel(sensorIndex)}{issue}";
+            issueCount++;
+        }
+
+        if (!anyRequired)
+        {
+            reason = "没有参与运行的传感器";
             return false;
         }
-        return anyRequired;
+        if (issueCount > 0)
+            return false;
+
+        reason = "九路均已满足运行条件";
+        return true;
+    }
+
+    private bool TryGetSensorRuntimeIssue(int sensorIndex, bool requireWarmupFrames, out string issue)
+    {
+        issue = string.Empty;
+        if (processor == null || !IndexInRange(sensorIndex) || !processor.HasCalibrationSample(sensorIndex))
+        {
+            issue = "无有效帧";
+            return true;
+        }
+
+        double ageMs = GetSensorFrameAgeMilliseconds(sensorIndex);
+        float timeoutMs = Mathf.Clamp(runtimeDeviceTimeoutSeconds, 0.5f, 2f) * 1000f;
+        if (double.IsInfinity(ageMs) || ageMs > timeoutMs)
+        {
+            issue = double.IsInfinity(ageMs)
+                ? "无有效帧"
+                : $"帧龄{ageMs:F0}ms>{timeoutMs:F0}ms";
+            return true;
+        }
+
+        float frameRateHz = GetSensorFrameRateHz(sensorIndex);
+        float minimumHz = Mathf.Clamp(runtimeMinimumFrameRateHz, 2f, 9f);
+        if (frameRateHz < minimumHz)
+        {
+            issue = $"接收{frameRateHz:F1}Hz<{minimumHz:F1}Hz";
+            return true;
+        }
+
+        if (requireWarmupFrames)
+        {
+            int freshFrames = GetSensorRuntimeWarmupFrameCount(sensorIndex);
+            int requiredFrames = Mathf.Clamp(runtimeReadinessMinimumUniqueFrames, 2, 8);
+            if (freshFrames < requiredFrames)
+            {
+                issue = $"新帧{freshFrames}/{requiredFrames}";
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void CaptureRuntimeReadinessBaseline()
+    {
+        if (config == null || processor == null) return;
+        if (runtimeReadinessStartSequences == null ||
+            runtimeReadinessStartSequences.Length != config.deviceCount)
+            runtimeReadinessStartSequences = new long[config.deviceCount];
+
+        for (int i = 0; i < runtimeReadinessStartSequences.Length; i++)
+        {
+            runtimeReadinessStartSequences[i] = IsSensorRequiredForCurrentDrive(i)
+                ? processor.GetCalibrationSampleSequence(i)
+                : -1L;
+        }
+    }
+
+    private int GetSensorRuntimeWarmupFrameCount(int sensorIndex)
+    {
+        if (processor == null || runtimeReadinessStartSequences == null || sensorIndex < 0 ||
+            sensorIndex >= runtimeReadinessStartSequences.Length)
+            return 0;
+        long baseline = runtimeReadinessStartSequences[sensorIndex];
+        long current = processor.GetCalibrationSampleSequence(sensorIndex);
+        if (baseline < 0L || current < baseline) return 0;
+        long delta = current - baseline;
+        return delta > int.MaxValue ? int.MaxValue : (int)delta;
+    }
+
+    private void ResetDriverSmoothingWithoutClearingCalibration()
+    {
+        leftLegDriver?.ResetSmoothingState();
+        rightLegDriver?.ResetSmoothingState();
+        armDriver?.ResetSmoothingState();
+        leftStandaloneCalfDriver?.ResetSmoothingState();
+        rightStandaloneCalfDriver?.ResetSmoothingState();
+        if (genericStandaloneDrivers == null) return;
+        for (int i = 0; i < genericStandaloneDrivers.Length; i++)
+            genericStandaloneDrivers[i]?.ResetSmoothingState();
     }
 
     private bool IsSensorRequiredForCurrentDrive(int sensorIndex)

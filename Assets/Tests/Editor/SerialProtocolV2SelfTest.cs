@@ -108,14 +108,18 @@ public static class SerialProtocolV2SelfTest
         SerialParser parser = new SerialParser();
         const uint hardwareId = 0xCAFEBABEu;
         Append(parser, BuildV2Frame(7, hardwareId, 10u, 1000u, Quaternion.identity));
-        Append(parser, BuildV2Frame(7, hardwareId, 12u, 1100u, Quaternion.identity));
-        Append(parser, BuildV2Frame(7, hardwareId, 12u, 1110u, Quaternion.identity));
-        Append(parser, BuildV2Frame(7, hardwareId, 11u, 1120u, Quaternion.identity));
+        Append(parser, BuildV2Frame(7, hardwareId, 12u, 1200u, Quaternion.identity));
+        Append(parser, BuildV2Frame(7, hardwareId, 12u, 1210u, Quaternion.identity));
+        Append(parser, BuildV2Frame(7, hardwareId, 11u, 1220u, Quaternion.identity));
 
         Require(parser.GetSourceLostFrameCount(6) == 1, "源端丢帧计数错误");
         Require(parser.GetSourceDuplicateFrameCount(6) == 1, "源端重复帧计数错误");
         Require(parser.GetSourceOutOfOrderFrameCount(6) == 1, "源端乱序帧计数错误");
         Require(parser.QueueCount == 2, "重复或乱序帧进入了业务队列");
+        Require(Mathf.Abs(parser.GetSourceReportedFrameRateHz(6) - 10f) < 0.01f,
+            "发送端序号/时钟没有正确估算控制板实际发送Hz");
+        Require(Mathf.Abs(parser.GetSourceDeliveryPercent(6) - (200f / 3f)) < 0.1f,
+            "接收帧/源端缺口没有正确计算链路到达率");
     }
 
     private static void ResetClearsOldFramesAndIdentityState()
@@ -127,6 +131,8 @@ public static class SerialProtocolV2SelfTest
         Require(parser.QueueCount == 0, "Reset 后仍残留旧业务帧");
         Require(!parser.HasV2Source(8), "Reset 后仍残留旧硬件身份");
         Require(parser.GetLastSourceSequence(8) == 0u, "Reset 后仍残留旧源端序号");
+        Require(parser.GetSourceReportedFrameRateHz(8) == 0f && parser.GetSourceDeliveryPercent(8) == 0f,
+            "Reset 后仍残留源端Hz或链路到达率");
         Require(parser.Crc16FailCount == 0 && parser.DuplicateLogicalIdConflictCount == 0,
             "Reset 后仍残留旧错误计数");
 
