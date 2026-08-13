@@ -22,7 +22,7 @@ using UnityEngine;
 /// </summary>
 public sealed class ArmPoseDriver
 {
-    public const string BuildVersion = "V8.14-RUNTIME-GATE-TELEMETRY-20260812-A";
+    public const string BuildVersion = "V8.15-AI-DIAGNOSTIC-LOG-20260812-B";
 
     // 以下枚举和公开属性保留，确保旧场景及 MotionCaptureController 可以无缝编译。
     public enum RightArmCorrectionMode
@@ -268,7 +268,7 @@ public sealed class ArmPoseDriver
     public ArmPoseDriver()
     {
         Debug.LogWarning(
-            "[V8.14 ACTIVE][ArmPoseDriver.Constructor] Build=" + BuildVersion +
+            "[V8.15 ACTIVE][ArmPoseDriver.Constructor] Build=" + BuildVersion +
             "；01保持原连续方向驱动；03使用传感器局部Delta与连续三轴矩阵驱动；无动作识别、无参考姿态吸附、无顶部提示；V8.11中02/04解锁并参与全身驱动");
         Reset();
     }
@@ -485,7 +485,7 @@ public sealed class ArmPoseDriver
         rightArmPoseLearningStatus = string.Empty;
 
         Debug.LogWarning(
-            "[V8.14 ACTIVE][ArmPoseDriver.Calibration] Build=" + BuildVersion +
+            "[V8.15 ACTIVE][ArmPoseDriver.Calibration] Build=" + BuildVersion +
             "；01使用局部+Z；03使用inverse(reference)*current传感器局部Delta，经连续三轴矩阵转换为肩关节Swing；无动作学习、无固定姿态吸附、无顶部提示；02/04使用各自标定数据驱动。\n" +
             $"  左大臂标定骨段方向(world)={restSegmentDirectionsWorld[0]}\n" +
             $"  左大臂传感器精确长轴(local)={sensorSegmentDirectionsLocal[0]}\n" +

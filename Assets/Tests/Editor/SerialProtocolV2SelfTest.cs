@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using UnityEditor;
 using UnityEngine;
 
@@ -40,6 +41,56 @@ public static class SerialProtocolV2SelfTest
         ResetClearsOldFramesAndIdentityState();
         AdaptiveCalibrationTimeoutUsesEachDeviceCadence();
         PairedLegCalibrationChannelsAccumulateIndependently();
+        AiDiagnosticLogIsIncrementalAndComplete();
+    }
+
+    private static void AiDiagnosticLogIsIncrementalAndComplete()
+    {
+        var logger = new AiDiagnosticLogger();
+        string path = string.Empty;
+        try
+        {
+            Require(logger.Open(
+                Path.GetTempPath(),
+                "SELF-TEST",
+                "KOA",
+                Application.unityVersion,
+                "COM-TEST",
+                115200,
+                9), "AI诊断日志无法创建：" + logger.LastError);
+            path = logger.CurrentPath;
+            logger.LogEvent("self_test", "WAITING_DATA", "incremental write");
+            logger.LogSnapshot(
+                "WAITING_DATA",
+                "self test",
+                string.Empty,
+                new AiDiagnosticLogger.ParserSnapshot { Port = "COM-TEST", Baud = 115200 },
+                new[] { new AiDiagnosticLogger.SensorSnapshot { Id = 1, Role = "测试", Q = Quaternion.identity } });
+
+            // AutoFlush=true：Close之前也必须已经能从另一个读句柄看到增量内容。
+            string liveText = ReadAllTextShared(path);
+            Require(liveText.Contains("\"kind\":\"session_start\"") &&
+                    liveText.Contains("\"kind\":\"event\"") &&
+                    liveText.Contains("\"kind\":\"snapshot\""),
+                "AI诊断日志未增量落盘");
+
+            logger.Close("self_test_complete");
+            string finalText = ReadAllTextShared(path);
+            Require(finalText.Contains("\"kind\":\"session_end\""), "AI诊断日志缺少结束记录");
+        }
+        finally
+        {
+            logger.Dispose();
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    private static string ReadAllTextShared(string path)
+    {
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var reader = new StreamReader(stream))
+            return reader.ReadToEnd();
     }
 
     private static void LegacyFrameStillParses()

@@ -3,7 +3,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// V8.11 九传感器全身诊断版。
+/// V8.15 九传感器全身诊断与AI增量日志版。
 /// - 强制选择01~09，所有传感器均参与稳定检查、标定和骨骼驱动；
 /// - 01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂，05驱动躯干；
 /// - 06+07、08+09分别驱动左右大小腿及膝关节；
@@ -12,7 +12,7 @@ using UnityEngine;
 /// </summary>
 public class MotionCaptureController : MonoBehaviour
 {
-    public const string BuildVersion = "V8.14-RUNTIME-GATE-TELEMETRY-20260812-A";
+    public const string BuildVersion = "V8.15-AI-DIAGNOSTIC-LOG-20260812-B";
     private const int CalibrationSamplesPerRequiredSensor = 5;
 
     public enum SensorCalibrationUiState
@@ -245,6 +245,9 @@ public class MotionCaptureController : MonoBehaviour
     public MotionDataHub DataHub => processor?.DataHub;
     public bool IsLogging => logger != null && logger.IsLogging;
     public string CurrentLogPath => logger?.CurrentLogPath ?? "";
+    public bool IsAiDiagnosticLogging => aiDiagnosticLogger != null && aiDiagnosticLogger.IsLogging;
+    public string AiDiagnosticLogPath => aiDiagnosticLogger?.CurrentPath ?? "";
+    public string CurrentTestLogRelativeDirectory { get; private set; } = string.Empty;
     public SensorTestSelectionMode CurrentSensorTestSelectionMode => sensorTestSelectionMode;
     public string ManualTestSensorIds => manualTestSensorIds ?? string.Empty;
     public string SensorTestSelectionSummary => fullBodyDiagnosticMode
@@ -304,6 +307,10 @@ public class MotionCaptureController : MonoBehaviour
 
     private SensorDataProcessor processor;
     private TelemetryLogger logger;
+    private AiDiagnosticLogger aiDiagnosticLogger;
+    private float nextAiDiagnosticSnapshotTime;
+    private string lastAiDiagnosticState = string.Empty;
+    private int aiDiagnosticMarkerCount;
 
     private GameObject[] bones;
     private Quaternion[] restLocalRotations;
@@ -558,7 +565,7 @@ public class MotionCaptureController : MonoBehaviour
         Application.runInBackground = true;
 
         Debug.LogWarning("\n==================================================\n" +
-            "[V8.14 ACTIVE] MotionCaptureController.Awake\n" +
+            "[V8.15 ACTIVE] MotionCaptureController.Awake\n" +
             "Build=" + BuildVersion + "\n" +
             "模式：强制选择01~09，九路全部参与稳定检查、标定和驱动\n" +
             "上肢：01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂\n" +
@@ -628,6 +635,7 @@ public class MotionCaptureController : MonoBehaviour
         }
         logger = new TelemetryLogger(
             string.IsNullOrEmpty(config.defaultPort) ? Directory.GetCurrentDirectory() : "");
+        aiDiagnosticLogger = new AiDiagnosticLogger();
 
         selectedBaud = config.defaultBaud;
         requireAllDevices = config.requireAllDevices;
@@ -733,7 +741,7 @@ public class MotionCaptureController : MonoBehaviour
 
         BindUIEvents();
 
-        Debug.LogWarning($"[V8.14 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；运行闸门=帧龄≤{runtimeDeviceTimeoutSeconds:F1}s、接收Hz≥{runtimeMinimumFrameRateHz:F1}、新帧≥{runtimeReadinessMinimumUniqueFrames}、连续{runtimeReadinessHoldSeconds:F1}s；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
+        Debug.LogWarning($"[V8.15 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；运行闸门=帧龄≤{runtimeDeviceTimeoutSeconds:F1}s、接收Hz≥{runtimeMinimumFrameRateHz:F1}、新帧≥{runtimeReadinessMinimumUniqueFrames}、连续{runtimeReadinessHoldSeconds:F1}s；AI诊断日志=连接即增量写盘；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
     }
 
     private void Update()
@@ -791,6 +799,7 @@ public class MotionCaptureController : MonoBehaviour
 
         logger.SyncState(Serial.IsConnected);
         logger.FlushIfDue();
+        UpdateAiDiagnosticLog();
     }
 
     private void LateUpdate()
@@ -907,8 +916,122 @@ public class MotionCaptureController : MonoBehaviour
 
     private void Cleanup()
     {
+        WriteAiDiagnosticSnapshot("cleanup_final");
+        aiDiagnosticLogger?.LogEvent("session_closing", GetAiDiagnosticStateName(), "Unity组件退出或停用");
+        aiDiagnosticLogger?.Close("unity_cleanup");
         Serial?.Dispose();
         logger?.Dispose();
+    }
+
+    private void UpdateAiDiagnosticLog()
+    {
+        if (aiDiagnosticLogger == null || !aiDiagnosticLogger.IsLogging) return;
+
+        string stateName = GetAiDiagnosticStateName();
+        if (!string.Equals(stateName, lastAiDiagnosticState, StringComparison.Ordinal))
+        {
+            aiDiagnosticLogger.LogEvent(
+                "state_changed",
+                stateName,
+                string.IsNullOrEmpty(lastAiDiagnosticState)
+                    ? $"初始状态->{stateName}"
+                    : $"{lastAiDiagnosticState}->{stateName}",
+                calibrationCountdownStatus);
+            lastAiDiagnosticState = stateName;
+            WriteAiDiagnosticSnapshot("state_changed");
+        }
+
+        if (Time.unscaledTime < nextAiDiagnosticSnapshotTime) return;
+        nextAiDiagnosticSnapshotTime = Time.unscaledTime + 1f;
+        WriteAiDiagnosticSnapshot("periodic");
+    }
+
+    private string GetAiDiagnosticStateName()
+    {
+        if (Serial == null || !Serial.IsConnected) return "DISCONNECTED";
+        if (State != null && State.IsDriving) return "DRIVING";
+        if (runtimeDriveSuspended) return "RUNTIME_SUSPENDED";
+        if (calibrationLockedWaitingForRuntime) return "CALIBRATION_LOCKED_WAITING_RUNTIME";
+        if (calibrationCountdownActive && calibrationSamplingActive) return "CALIBRATION_SAMPLING";
+        if (calibrationCountdownActive) return "CALIBRATION_COUNTDOWN";
+        if (State == null || !State.HasAnyData) return "WAITING_DATA";
+        if (!State.IsStable) return "WAITING_STABILITY";
+        return "CONNECTED_READY";
+    }
+
+    private void WriteAiDiagnosticSnapshot(string trigger)
+    {
+        if (aiDiagnosticLogger == null || !aiDiagnosticLogger.IsLogging) return;
+
+        SerialParser parser = Serial != null ? Serial.Parser : null;
+        var parserSnapshot = new AiDiagnosticLogger.ParserSnapshot
+        {
+            Connected = Serial != null && Serial.IsConnected,
+            Port = Serial != null ? Serial.CurrentPort : string.Empty,
+            Baud = selectedBaud,
+            PayloadLength = parser != null ? parser.LastPayloadLength : 0,
+            XorFailures = parser != null ? parser.ChecksumFailCount : 0,
+            CrcFailures = parser != null ? parser.Crc16FailCount : 0,
+            InvalidPayloadLengths = parser != null ? parser.InvalidPayloadLengthCount : 0,
+            InvalidQuaternions = parser != null ? parser.InvalidQuaternionCount : 0,
+            InvalidDeviceIds = parser != null ? parser.InvalidDeviceIdCount : 0,
+            ParityErrors = parser != null ? parser.ParityErrorCount : 0,
+            FrameErrors = parser != null ? parser.FrameErrorCount : 0,
+            OverrunErrors = parser != null ? parser.OverrunErrorCount : 0,
+            DuplicateIdConflicts = parser != null ? parser.DuplicateLogicalIdConflictCount : 0,
+            QueueDepth = parser != null ? parser.QueueCount : 0,
+            QueueCapacity = parser != null ? parser.GlobalQueueCapacity : 0,
+            QueueDrops = parser != null ? parser.GlobalQueueDroppedFrameCount : 0,
+            BacklogDiscarded = BacklogDiscardedFrameCount
+        };
+
+        int count = config != null ? Mathf.Max(0, config.deviceCount) : 9;
+        var sensors = new AiDiagnosticLogger.SensorSnapshot[count];
+        Quaternion[] quaternions = TransformedQuaternions;
+        for (int i = 0; i < count; i++)
+        {
+            bool hasV2 = parser != null && parser.HasV2Source(i);
+            sensors[i] = new AiDiagnosticLogger.SensorSnapshot
+            {
+                Id = i + 1,
+                Role = GetSensorRoleLabel(i),
+                Required = fullBodyDiagnosticMode ? i < 9 : IsSensorRequiredForCurrentDrive(i),
+                Online = IsSensorOnline(i),
+                RuntimeReady = IsSensorRuntimeReady(i),
+                Stable = IsSensorStable(i),
+                Calibration = GetSensorCalibrationUiState(i).ToString(),
+                ReceiveHz = GetSensorFrameRateHz(i),
+                SourceHz = hasV2 ? parser.GetSourceReportedFrameRateHz(i) : 0f,
+                AgeMs = GetSensorFrameAgeMilliseconds(i),
+                DeliveryPercent = hasV2 ? parser.GetSourceDeliveryPercent(i) : 0f,
+                SourceLost = hasV2 ? parser.GetSourceLostFrameCount(i) : 0L,
+                SourceDuplicate = hasV2 ? parser.GetSourceDuplicateFrameCount(i) : 0L,
+                SourceOutOfOrder = hasV2 ? parser.GetSourceOutOfOrderFrameCount(i) : 0L,
+                SourceRestart = hasV2 ? parser.GetSourceRestartCount(i) : 0L,
+                DuplicateLogicalId = hasV2 ? parser.GetDuplicateLogicalIdCount(i) : 0L,
+                HardwareId = hasV2 ? parser.GetHardwareId(i) : 0u,
+                SourceSequence = hasV2 ? parser.GetLastSourceSequence(i) : 0u,
+                SenderTickMs = hasV2 ? parser.GetLastSenderTickMs(i) : 0u,
+                InputSequenceGap = GetSensorInputSequenceGapCount(i),
+                CalibrationAccepted = GetSensorCalibrationAcceptedSamples(i),
+                CalibrationRequired = GetSensorCalibrationRequiredSamples(i),
+                CalibrationRejected = GetSensorCalibrationRejectedSamples(i),
+                CalibrationRestarts = GetSensorCalibrationRestartCount(i),
+                RuntimeFaults = GetSensorRuntimeFaultCount(i),
+                Q = quaternions != null && i < quaternions.Length
+                    ? quaternions[i]
+                    : Quaternion.identity
+            };
+        }
+
+        aiDiagnosticLogger.LogSnapshot(
+            GetAiDiagnosticStateName(),
+            string.IsNullOrEmpty(trigger)
+                ? calibrationCountdownStatus
+                : $"[{trigger}] {calibrationCountdownStatus}",
+            LastRuntimeFaultSummary,
+            parserSnapshot,
+            sensors);
     }
 
     private void BindUIEvents()
@@ -955,9 +1078,9 @@ public class MotionCaptureController : MonoBehaviour
         };
         ui.OnMinStableDevicesChanged += v => config.minStableDevices = v;
         ui.OnSaveEnabledChanged += v => logger.SaveEnabled = v;
-        ui.OnExportDirectoryChanged += v => logger.SetExportDirectory(v);
         ui.OnStartRecordingRequested += HandleStartRecording;
         ui.OnStopRecordingRequested += HandleStopRecording;
+        ui.OnDiagnosticMarkerRequested += HandleDiagnosticMarker;
 
         ui.OnLimitsToggled += _ => { };
         ui.OnTwistSwingToggled += _ => { };
@@ -966,6 +1089,28 @@ public class MotionCaptureController : MonoBehaviour
     private void HandleConnect(string port, int baud)
     {
         selectedBaud = baud;
+
+        // 每次点击连接都视为一次独立测试。先结束上次Excel，再为本次测试创建
+        // 项目相对目录 Logs/yyyyMMdd_HHmmss_fff，AI日志和Excel统一写入其中。
+        logger?.Close();
+        string diagnosticDirectory = CreateTestLogDirectory();
+        logger?.SetExportDirectory(diagnosticDirectory);
+        bool diagnosticOpened = aiDiagnosticLogger != null && aiDiagnosticLogger.Open(
+            diagnosticDirectory,
+            BuildVersion,
+            Application.productName,
+            Application.unityVersion,
+            port,
+            baud,
+            config != null ? config.deviceCount : 9);
+        nextAiDiagnosticSnapshotTime = Time.unscaledTime;
+        lastAiDiagnosticState = string.Empty;
+        aiDiagnosticMarkerCount = 0;
+        if (diagnosticOpened)
+            aiDiagnosticLogger.LogEvent("connect_requested", "CONNECTING", $"请求打开{port}@{baud}");
+        else if (aiDiagnosticLogger != null)
+            Debug.LogError($"[AI诊断日志] 创建失败：{aiDiagnosticLogger.LastError}");
+
         ResetRuntimeLinkState(true);
         ResetAutomaticCalibrationState();
         ResetArmSamplingState();
@@ -975,7 +1120,42 @@ public class MotionCaptureController : MonoBehaviour
         Serial.ResetParser();
         processor?.DataHub?.Reset();
         ClearDeviceAvailability();
-        Serial.Connect(port, baud);
+        bool connected = Serial.Connect(port, baud);
+        aiDiagnosticLogger?.LogEvent(
+            connected ? "connect_succeeded" : "connect_failed",
+            connected ? "CONNECTED" : "CONNECT_FAILED",
+            connected ? $"串口已打开：{port}@{baud}" : $"串口打开失败：{port}@{baud}");
+        WriteAiDiagnosticSnapshot("connect_result");
+    }
+
+    private string CreateTestLogDirectory()
+    {
+        string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        string logsRoot = Path.Combine(projectRoot, "Logs");
+        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+        string folderName = timestamp;
+        string candidate = Path.Combine(logsRoot, folderName);
+        try
+        {
+            Directory.CreateDirectory(logsRoot);
+            int suffix = 2;
+            while (Directory.Exists(candidate))
+            {
+                folderName = $"{timestamp}_{suffix}";
+                candidate = Path.Combine(logsRoot, folderName);
+                suffix++;
+            }
+
+            Directory.CreateDirectory(candidate);
+            CurrentTestLogRelativeDirectory = Path.Combine("Logs", folderName);
+        }
+        catch (Exception ex)
+        {
+            // 日志目录异常不能阻止串口主程序继续连接；后续两个日志器会各自报告创建失败。
+            CurrentTestLogRelativeDirectory = "Logs（创建失败）";
+            Debug.LogError($"[测试日志目录] 无法创建 {candidate}：{ex.Message}");
+        }
+        return candidate;
     }
 
     private void HandleStartRecording()
@@ -995,8 +1175,22 @@ public class MotionCaptureController : MonoBehaviour
         logger?.Close();
     }
 
+    private void HandleDiagnosticMarker()
+    {
+        if (aiDiagnosticLogger == null || !aiDiagnosticLogger.IsLogging) return;
+        aiDiagnosticMarkerCount++;
+        aiDiagnosticLogger.LogEvent(
+            "user_problem_marker",
+            GetAiDiagnosticStateName(),
+            $"客户手动标记第{aiDiagnosticMarkerCount}个异常时刻",
+            calibrationCountdownStatus);
+        WriteAiDiagnosticSnapshot($"user_problem_marker_{aiDiagnosticMarkerCount}");
+    }
+
     private void HandleDisconnect()
     {
+        WriteAiDiagnosticSnapshot("disconnect_final");
+        aiDiagnosticLogger?.LogEvent("disconnect_requested", GetAiDiagnosticStateName(), "用户请求断开连接");
         ResetRuntimeLinkState(true);
         CancelCalibrationCountdown("已断开连接");
         ResetAutomaticCalibrationState();
@@ -1016,6 +1210,7 @@ public class MotionCaptureController : MonoBehaviour
         kneeMeasurementCalibrationDeadlineTime = -1f;
         processor?.DataHub?.Reset();
         ClearDeviceAvailability();
+        aiDiagnosticLogger?.Close("user_disconnect");
     }
 
     private void HandleRefreshPorts()
@@ -2063,6 +2258,12 @@ public class MotionCaptureController : MonoBehaviour
         if (logger != null && logger.SaveEnabled && !logger.IsLogging && !logger.Open())
             Debug.LogWarning("[Excel记录] 标定已锁定，但通信诊断记录启动失败，请检查导出目录。");
 
+        aiDiagnosticLogger?.LogEvent(
+            "calibration_locked",
+            "CALIBRATION_LOCKED_WAITING_RUNTIME",
+            "九路标定结果已锁定，开始等待严格运行条件",
+            initialGateReason);
+        WriteAiDiagnosticSnapshot("calibration_locked");
         Debug.LogWarning($"[CalibrationLocked/RuntimePending] {calibrationCountdownStatus}");
     }
 
@@ -2111,6 +2312,8 @@ public class MotionCaptureController : MonoBehaviour
 
     private void HandleReset()
     {
+        WriteAiDiagnosticSnapshot("reset_final");
+        aiDiagnosticLogger?.LogEvent("reset_requested", GetAiDiagnosticStateName(), "用户点击重置");
         ResetRuntimeLinkState(true);
         CancelCalibrationCountdown("已重置");
         ResetAutomaticCalibrationState();
@@ -2137,6 +2340,7 @@ public class MotionCaptureController : MonoBehaviour
             avatarRoot.rotation = avatarRootBaseRotation;
 
         State.Reset();
+        aiDiagnosticLogger?.Close("user_reset");
     }
 
     private void TryInitializeKneeMeasurements()
@@ -2622,8 +2826,6 @@ public class MotionCaptureController : MonoBehaviour
             runtimeFaultCounts[faultSensorIndex]++;
 
         string message = $"通信故障，已停止旧姿态消费并恢复人物：{lastRuntimeFaultSummary}；保留标定和九路诊断，等待新数据恢复";
-        Debug.LogError($"[RuntimeLinkFault] {message}");
-
         State.SetDriving(false);
         calibrationLockedWaitingForRuntime = false;
         runtimeDriveSuspended = true;
@@ -2639,6 +2841,15 @@ public class MotionCaptureController : MonoBehaviour
         ResetDriverSmoothingWithoutClearingCalibration();
         CaptureRuntimeReadinessBaseline();
         calibrationCountdownStatus = message;
+
+        // 先完成状态切换，再记录故障快照，确保日志中的state与现场界面一致。
+        aiDiagnosticLogger?.LogEvent(
+            "runtime_link_fault",
+            "RUNTIME_SUSPENDED",
+            message,
+            faultSensorIndex >= 0 ? $"trigger_sensor={faultSensorIndex + 1:00}" : "trigger_sensor=serial_or_id_conflict");
+        WriteAiDiagnosticSnapshot("runtime_link_fault");
+        Debug.LogError($"[RuntimeLinkFault] {message}");
     }
 
     private bool TryResumeSuspendedDriving()
@@ -2708,8 +2919,14 @@ public class MotionCaptureController : MonoBehaviour
         }
         if (logger != null && logger.SaveEnabled && !logger.IsLogging)
             logger.Open();
+        aiDiagnosticLogger?.LogEvent(
+            wasRuntimeRecovery ? "runtime_recovered" : "runtime_gate_passed",
+            "DRIVING",
+            calibrationCountdownStatus,
+            $"min_receive_hz={runtimeMinimumFrameRateHz:F1}, max_age_s={runtimeDeviceTimeoutSeconds:F1}, warmup_frames={runtimeReadinessMinimumUniqueFrames}");
+        WriteAiDiagnosticSnapshot(wasRuntimeRecovery ? "runtime_recovered" : "runtime_gate_passed");
         Debug.LogWarning(
-            $"[V8.14][RuntimeGatePassed] Build={BuildVersion}；九路帧龄≤{runtimeDeviceTimeoutSeconds:F1}s、" +
+            $"[V8.15][RuntimeGatePassed] Build={BuildVersion}；九路帧龄≤{runtimeDeviceTimeoutSeconds:F1}s、" +
             $"接收Hz≥{runtimeMinimumFrameRateHz:F1}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
             (wasRuntimeRecovery ? "沿用已锁存标定恢复驱动" : "首次进入驱动"));
         return true;

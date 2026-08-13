@@ -65,8 +65,8 @@ public class MotionCaptureUI : MonoBehaviour
     /// <summary>用户点击“停止记录”，一次性生成 9-Sheet Excel。</summary>
     public event Action OnStopRecordingRequested;
 
-    /// <summary>用户修改导出目录路径</summary>
-    public event Action<string> OnExportDirectoryChanged;
+    /// <summary>用户在问题发生时手动写入带九路快照的诊断标记。</summary>
+    public event Action OnDiagnosticMarkerRequested;
 
     /// <summary>用户在端口下拉列表中选中某一项，参数：索引</summary>
     public event Action<int> OnPortSelected;
@@ -109,15 +109,13 @@ public class MotionCaptureUI : MonoBehaviour
     private bool requireAllDevicesUI;       // 要求所有设备稳定
     private int minStableDevicesUI = 1;     // 最少稳定设备数
     private bool saveEnabledUI = true;      // 保存到文件开关
-    private string exportDirUI = "";        // 导出目录文本
-
     // ── 端口下拉选择 ──
     private bool portDropdownOpen;          // 下拉菜单是否展开
     private Vector2 portDropdownScroll;     // 下拉列表的滚动位置
     private const float PORT_ITEM_HEIGHT = 20f;  // 每个端口项的高度
 
     // ── 窗口布局 ──
-    private Rect controlWindowRect = new Rect(20f, 20f, 320f, 620f);   // 控制面板位置
+    private Rect controlWindowRect = new Rect(20f, 20f, 320f, 660f);   // 控制面板位置
     private Rect telemetryWindowRect;        // 遥测窗口位置（在 Start 中初始化）
     private Rect kneeWindowRect = new Rect(0f, 0f, 500f, 430f);
     private bool telemetryRectInitialized;   // 遥测窗口是否已初始化过位置
@@ -132,7 +130,7 @@ public class MotionCaptureUI : MonoBehaviour
     private const int KNEE_WINDOW_ID = 0xC0DE124;
 
     // 窗口最小尺寸限制
-    private const float MIN_CTRL_W = 260f, MIN_CTRL_H = 620f;
+    private const float MIN_CTRL_W = 320f, MIN_CTRL_H = 660f;
     private const float MIN_TELE_W = 1120f, MIN_TELE_H = 340f;
     private const float TELE_DEFAULT_W = 1120f, TELE_DEFAULT_H = 340f;
     private const float TELE_MARGIN = 20f;     // 遥测窗口距屏幕边缘的边距
@@ -192,7 +190,6 @@ public class MotionCaptureUI : MonoBehaviour
     {
         if (controller != null)
         {
-            exportDirUI = controller.GetExportDirectory();
             if (controller.State != null)
                 controller.State.OnChanged += OnStateChanged;
             else
@@ -405,27 +402,36 @@ public class MotionCaptureUI : MonoBehaviour
         GUI.enabled = wasEnabled && controller.IsLogging;
         if (GUI.Button(new Rect(130, 414, 100, 30), "停止并保存"))
             OnStopRecordingRequested?.Invoke();
+
+        GUI.enabled = wasEnabled && controller.IsAiDiagnosticLogging;
+        if (GUI.Button(new Rect(240, 414, Mathf.Max(60f, width - 260f), 30), "标记异常"))
+            OnDiagnosticMarkerRequested?.Invoke();
         GUI.enabled = wasEnabled;
 
-        GUI.Label(new Rect(20, 452, width - 40, 20), "Excel 导出目录:");
-        string newDir = GUI.TextField(new Rect(20, 474, width - 40, 22), exportDirUI ?? "");
-        if (newDir != exportDirUI)
-        {
-            exportDirUI = newDir;
-            OnExportDirectoryChanged?.Invoke(exportDirUI);
-        }
+        GUI.Label(new Rect(20, 452, width - 40, 20), "日志自动保存目录:");
+        string relativeLogDirectory = string.IsNullOrEmpty(controller.CurrentTestLogRelativeDirectory)
+            ? @"Logs\点击连接后自动创建日期时间文件夹"
+            : controller.CurrentTestLogRelativeDirectory;
+        GUI.Label(new Rect(20, 474, width - 40, 22), relativeLogDirectory);
 
         string logStatus = controller.IsLogging
             ? $"内存记录中: {Path.GetFileName(controller.CurrentLogPath)}"
             : "未记录";
         GUI.Label(new Rect(20, 504, width - 40, 20), logStatus);
-        GUI.Label(new Rect(20, 530, width - 40, 20), $"稳定: {(state.IsStable ? "OK" : "等待")}");
+
+        string aiLogStatus = controller.IsAiDiagnosticLogging
+            ? $"AI诊断自动记录: {Path.GetFileName(controller.AiDiagnosticLogPath)}"
+            : !string.IsNullOrEmpty(controller.AiDiagnosticLogPath)
+                ? $"AI诊断已保存: {Path.GetFileName(controller.AiDiagnosticLogPath)}"
+                : "AI诊断自动记录: 点击连接后开始";
+        GUI.Label(new Rect(20, 528, width - 40, 20), aiLogStatus);
+        GUI.Label(new Rect(20, 554, width - 40, 20), $"稳定: {(state.IsStable ? "OK" : "等待")}");
 
         // V77.28：直接显示协议接收状态，便于区分“串口已打开”和“真正收到有效姿态帧”。
         var parser = serial.Parser;
         if (parser != null)
         {
-            GUI.Label(new Rect(20, 554, width - 40, 20),
+            GUI.Label(new Rect(20, 578, width - 40, 20),
                 $"协议 len:{parser.LastPayloadLength}  XOR错:{parser.ChecksumFailCount}  " +
                 $"CRC错:{parser.Crc16FailCount}  重复ID:{parser.DuplicateLogicalIdConflictCount}");
         }
@@ -438,7 +444,7 @@ public class MotionCaptureUI : MonoBehaviour
                 wordWrap = true,
                 normal = { textColor = UiTextSecondary }
             };
-            GUI.Label(new Rect(20, 578, width - 40, 38),
+            GUI.Label(new Rect(20, 602, width - 40, 48),
                 controller.CalibrationCountdownStatus, calibrationHint);
         }
 
