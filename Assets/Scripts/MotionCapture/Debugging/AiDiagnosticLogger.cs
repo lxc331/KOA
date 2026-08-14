@@ -57,6 +57,12 @@ public sealed class AiDiagnosticLogger : IDisposable
         public uint HardwareId;
         public uint SourceSequence;
         public uint SenderTickMs;
+        public int SourceFlags;
+        public bool SourceClockReliable;
+        public bool SourceMainClockHealthy;
+        public float SourceBacklogAgeMs;
+        public float SourceMaximumBacklogAgeMs;
+        public long SourceStaleRejected;
         public long InputSequenceGap;
         public int CalibrationAccepted;
         public int CalibrationRequired;
@@ -215,6 +221,12 @@ public sealed class AiDiagnosticLogger : IDisposable
                 AppendString(sb, "hardware_id", s.HardwareId == 0u ? "" : s.HardwareId.ToString("X8", Invariant)); sb.Append(',');
                 AppendNumber(sb, "source_sequence", s.SourceSequence); sb.Append(',');
                 AppendNumber(sb, "sender_tick_ms", s.SenderTickMs); sb.Append(',');
+                AppendNumber(sb, "source_flags", s.SourceFlags); sb.Append(',');
+                AppendBoolean(sb, "source_clock_reliable", s.SourceClockReliable); sb.Append(',');
+                AppendBoolean(sb, "source_main_clock_healthy", s.SourceMainClockHealthy); sb.Append(',');
+                AppendFloat(sb, "source_backlog_age_ms", s.SourceBacklogAgeMs); sb.Append(',');
+                AppendFloat(sb, "source_max_backlog_age_ms", s.SourceMaximumBacklogAgeMs); sb.Append(',');
+                AppendNumber(sb, "source_stale_rejected", s.SourceStaleRejected); sb.Append(',');
                 AppendNumber(sb, "input_sequence_gap", s.InputSequenceGap); sb.Append(',');
                 AppendNumber(sb, "calibration_accepted", s.CalibrationAccepted); sb.Append(',');
                 AppendNumber(sb, "calibration_required", s.CalibrationRequired); sb.Append(',');

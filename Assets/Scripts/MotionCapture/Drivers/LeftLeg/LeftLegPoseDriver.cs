@@ -51,6 +51,7 @@ public enum LeftThighApplyOrder
 /// </summary>
 public sealed class LeftLegPoseDriver
 {
+    private bool preserveInactiveCalfPose;
     public const int LeftThighIndex = 5;
     public const int LeftCalfIndex = 6;
 
@@ -961,7 +962,7 @@ public sealed class LeftLegPoseDriver
             else
                 ApplyThighRotation(thigh, thighTarget);
 
-            if (calf != null)
+            if (calf != null && !preserveInactiveCalfPose)
             {
                 calf.localRotation = CalfBoneRestLocal;
                 smoothedCalfLocal = CalfBoneRestLocal;
@@ -969,7 +970,7 @@ public sealed class LeftLegPoseDriver
             }
 
             LastAppliedThighLocal = thigh.localRotation;
-            LastAppliedCalfLocal = CalfBoneRestLocal;
+            LastAppliedCalfLocal = calf != null ? calf.localRotation : CalfBoneRestLocal;
             LastError = "";
             return true;
         }
@@ -1083,6 +1084,30 @@ public sealed class LeftLegPoseDriver
 
         LastError = "";
         return true;
+    }
+
+    public bool ApplyAvailable(
+        Quaternion[] transformedQuaternions,
+        Transform thigh,
+        Transform calf,
+        bool thighInputAvailable,
+        bool calfInputAvailable)
+    {
+        if (!thighInputAvailable)
+            return false;
+
+        bool configuredDriveCalf = DriveCalf;
+        preserveInactiveCalfPose = configuredDriveCalf && !calfInputAvailable;
+        try
+        {
+            DriveCalf = configuredDriveCalf && calfInputAvailable;
+            return Apply(transformedQuaternions, thigh, calf);
+        }
+        finally
+        {
+            DriveCalf = configuredDriveCalf;
+            preserveInactiveCalfPose = false;
+        }
     }
 
     public void TryLogDebug(Quaternion[] transformedQuaternions, Transform thigh, Transform calf)

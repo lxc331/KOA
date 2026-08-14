@@ -64,6 +64,7 @@ public enum RightThighEulerRemapMode
 /// </summary>
 public sealed class RightLegPoseDriver
 {
+    private bool preserveInactiveCalfPose;
     public const int RightThighIndex = 7;
     public const int RightCalfIndex = 8;
 
@@ -1035,7 +1036,7 @@ public sealed class RightLegPoseDriver
             else
                 ApplyThighRotation(thigh, thighTarget);
 
-            if (calf != null)
+            if (calf != null && !preserveInactiveCalfPose)
             {
                 calf.localRotation = CalfBoneRestLocal;
                 smoothedCalfLocal = CalfBoneRestLocal;
@@ -1043,7 +1044,7 @@ public sealed class RightLegPoseDriver
             }
 
             LastAppliedThighLocal = thigh.localRotation;
-            LastAppliedCalfLocal = CalfBoneRestLocal;
+            LastAppliedCalfLocal = calf != null ? calf.localRotation : CalfBoneRestLocal;
             LastError = "";
             return true;
         }
@@ -1157,6 +1158,30 @@ public sealed class RightLegPoseDriver
 
         LastError = "";
         return true;
+    }
+
+    public bool ApplyAvailable(
+        Quaternion[] transformedQuaternions,
+        Transform thigh,
+        Transform calf,
+        bool thighInputAvailable,
+        bool calfInputAvailable)
+    {
+        if (!thighInputAvailable)
+            return false;
+
+        bool configuredDriveCalf = DriveCalf;
+        preserveInactiveCalfPose = configuredDriveCalf && !calfInputAvailable;
+        try
+        {
+            DriveCalf = configuredDriveCalf && calfInputAvailable;
+            return Apply(transformedQuaternions, thigh, calf);
+        }
+        finally
+        {
+            DriveCalf = configuredDriveCalf;
+            preserveInactiveCalfPose = false;
+        }
     }
 
     public void TryLogDebug(Quaternion[] transformedQuaternions, Transform thigh, Transform calf)

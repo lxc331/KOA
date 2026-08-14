@@ -22,7 +22,7 @@ using UnityEngine;
 /// </summary>
 public sealed class ArmPoseDriver
 {
-    public const string BuildVersion = "V8.15-AI-DIAGNOSTIC-LOG-20260812-B";
+    public const string BuildVersion = "V8.18-INDEPENDENT-ARM-INPUTS-20260814";
 
     // 以下枚举和公开属性保留，确保旧场景及 MotionCaptureController 可以无缝编译。
     public enum RightArmCorrectionMode
@@ -268,7 +268,7 @@ public sealed class ArmPoseDriver
     public ArmPoseDriver()
     {
         Debug.LogWarning(
-            "[V8.15 ACTIVE][ArmPoseDriver.Constructor] Build=" + BuildVersion +
+            "[V8.18 ACTIVE][ArmPoseDriver.Constructor] Build=" + BuildVersion +
             "；01保持原连续方向驱动；03使用传感器局部Delta与连续三轴矩阵驱动；无动作识别、无参考姿态吸附、无顶部提示；V8.11中02/04解锁并参与全身驱动");
         Reset();
     }
@@ -485,7 +485,7 @@ public sealed class ArmPoseDriver
         rightArmPoseLearningStatus = string.Empty;
 
         Debug.LogWarning(
-            "[V8.15 ACTIVE][ArmPoseDriver.Calibration] Build=" + BuildVersion +
+            "[V8.18 ACTIVE][ArmPoseDriver.Calibration] Build=" + BuildVersion +
             "；01使用局部+Z；03使用inverse(reference)*current传感器局部Delta，经连续三轴矩阵转换为肩关节Swing；无动作学习、无固定姿态吸附、无顶部提示；02/04使用各自标定数据驱动。\n" +
             $"  左大臂标定骨段方向(world)={restSegmentDirectionsWorld[0]}\n" +
             $"  左大臂传感器精确长轴(local)={sensorSegmentDirectionsLocal[0]}\n" +
@@ -512,8 +512,10 @@ public sealed class ArmPoseDriver
             return false;
         }
 
-        int requiredSensorIndex = DriveRightArm ? RightArmIndex :
-                                  (DriveLeftArm ? LeftArmIndex : -1);
+        int requiredSensorIndex = DriveRightForeArm ? RightForeArmIndex :
+                                  (DriveRightArm ? RightArmIndex :
+                                  (DriveLeftForeArm ? LeftForeArmIndex :
+                                  (DriveLeftArm ? LeftArmIndex : -1)));
         if (requiredSensorIndex < 0)
         {
             LastError = "没有启用任何大臂骨骼";
@@ -525,8 +527,10 @@ public sealed class ArmPoseDriver
             return false;
         }
 
-        if ((DriveLeftArm && (leftArm == null || leftForeArm == null)) ||
-            (DriveRightArm && (rightArm == null || rightForeArm == null)))
+        if ((DriveLeftArm && leftArm == null) ||
+            (DriveLeftForeArm && leftForeArm == null) ||
+            (DriveRightArm && rightArm == null) ||
+            (DriveRightForeArm && rightForeArm == null))
         {
             LastError = "本轮启用侧的手臂骨骼引用不完整";
             return false;
@@ -618,11 +622,16 @@ public sealed class ArmPoseDriver
         {
             // 兼容路径：若手动关闭小臂锁定，仍沿用 V77.12 的完整世界姿态映射。
             // 本轮测试不使用该路径。
-            Quaternion leftForeSensor = NormalizeSafe(sensorQuats[LeftForeArmIndex]);
-            Quaternion rightForeSensor = NormalizeSafe(
-                ApplyRightForeArmCorrection(sensorQuats[RightForeArmIndex], RightForeArmCorrection));
+            Quaternion leftForeSensor = DriveLeftForeArm
+                ? NormalizeSafe(sensorQuats[LeftForeArmIndex])
+                : Quaternion.identity;
+            Quaternion rightForeSensor = DriveRightForeArm
+                ? NormalizeSafe(ApplyRightForeArmCorrection(
+                    sensorQuats[RightForeArmIndex], RightForeArmCorrection))
+                : Quaternion.identity;
 
-            if (!IsQuaternionFinite(leftForeSensor) || !IsQuaternionFinite(rightForeSensor))
+            if ((DriveLeftForeArm && !IsQuaternionFinite(leftForeSensor)) ||
+                (DriveRightForeArm && !IsQuaternionFinite(rightForeSensor)))
             {
                 LastError = "左右小臂当前四元数包含 NaN/Infinity 或零长度四元数";
                 return appliedAny;
@@ -649,6 +658,50 @@ public sealed class ArmPoseDriver
             LastError = "没有任何手臂骨骼被应用，请检查 Drive 开关";
 
         return appliedAny;
+    }
+
+    /// <summary>
+    /// Applies only the bones whose own input is fresh.  Configuration flags
+    /// remain unchanged, so a missing 04 frame can freeze the right forearm
+    /// without suppressing 01/02/03 or either upper arm.
+    /// </summary>
+    public bool ApplyAvailable(
+        Quaternion[] sensorQuats,
+        Transform leftArm,
+        Transform leftForeArm,
+        Transform rightArm,
+        Transform rightForeArm,
+        Transform avatarRoot,
+        bool leftArmInputAvailable,
+        bool leftForeArmInputAvailable,
+        bool rightArmInputAvailable,
+        bool rightForeArmInputAvailable)
+    {
+        bool configuredLeftArm = DriveLeftArm;
+        bool configuredLeftForeArm = DriveLeftForeArm;
+        bool configuredRightArm = DriveRightArm;
+        bool configuredRightForeArm = DriveRightForeArm;
+        try
+        {
+            DriveLeftArm = configuredLeftArm && leftArmInputAvailable;
+            DriveLeftForeArm = configuredLeftForeArm && leftForeArmInputAvailable;
+            DriveRightArm = configuredRightArm && rightArmInputAvailable;
+            DriveRightForeArm = configuredRightForeArm && rightForeArmInputAvailable;
+            return Apply(
+                sensorQuats,
+                leftArm,
+                leftForeArm,
+                rightArm,
+                rightForeArm,
+                avatarRoot);
+        }
+        finally
+        {
+            DriveLeftArm = configuredLeftArm;
+            DriveLeftForeArm = configuredLeftForeArm;
+            DriveRightArm = configuredRightArm;
+            DriveRightForeArm = configuredRightForeArm;
+        }
     }
 
     /// <summary>

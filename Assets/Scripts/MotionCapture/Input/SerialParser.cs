@@ -17,6 +17,9 @@ public class SerialParser
     private const int V2_PAYLOAD_LENGTH = 30;
     private const int V2_VERSION_PAYLOAD_OFFSET = 16;
     private const byte V2_PROTOCOL_VERSION = 2;
+    private const byte SOURCE_FLAG_METADATA_VALID = 0x01;
+    private const byte SOURCE_FLAG_HARDWARE_TIME_VALID = 0x02;
+    private const byte SOURCE_FLAG_CLOCK_72MHZ = 0x04;
 
     Parity parity;
     int dataBits;
@@ -52,6 +55,12 @@ public class SerialParser
     private readonly long[] duplicateLogicalIdCount = new long[MAX_DEVICE_COUNT];
     private readonly long[] sourceAcceptedFrameCount = new long[MAX_DEVICE_COUNT];
     private readonly float[] sourceReportedFrameRateHz = new float[MAX_DEVICE_COUNT];
+    private readonly byte[] lastSourceFlags = new byte[MAX_DEVICE_COUNT];
+    private readonly long[] sourceTimingStartStamp = new long[MAX_DEVICE_COUNT];
+    private readonly ulong[] sourceElapsedTickMs = new ulong[MAX_DEVICE_COUNT];
+    private readonly double[] sourceMinimumOffsetSeconds = new double[MAX_DEVICE_COUNT];
+    private readonly float[] sourceBacklogAgeMs = new float[MAX_DEVICE_COUNT];
+    private readonly float[] sourceMaximumBacklogAgeMs = new float[MAX_DEVICE_COUNT];
 
     public int ParityErrorCount { get { return parityErrorCount; } }
     public int FrameErrorCount { get { return frameErrorCount; } }
@@ -73,6 +82,9 @@ public class SerialParser
         public uint HardwareId;
         public uint SourceSequence;
         public uint SenderTickMs;
+        public byte SourceFlags;
+        public bool SourceClockReliable;
+        public float SourceBacklogAgeMs;
     }
     private readonly Queue<SensorFrame>[] deviceQueues = new Queue<SensorFrame>[MAX_DEVICE_COUNT];
     private readonly object[] deviceQueueLocks = new object[MAX_DEVICE_COUNT];
@@ -92,6 +104,9 @@ public class SerialParser
         public uint HardwareId;
         public uint SourceSequence;
         public uint SenderTickMs;
+        public byte SourceFlags;
+        public bool SourceClockReliable;
+        public float SourceBacklogAgeMs;
     }
     private readonly Queue<QueuedFrame> queuedFrames = new Queue<QueuedFrame>();
     private readonly object queuedFramesLock = new object();
@@ -119,6 +134,7 @@ public class SerialParser
             duplicateLogicalIdCount[i] = 0;
             sourceAcceptedFrameCount[i] = 0;
             sourceReportedFrameRateHz[i] = 0f;
+            ResetSourceTiming(i);
         }
     }
 
@@ -142,6 +158,7 @@ public class SerialParser
             duplicateLogicalIdCount[i] = 0;
             sourceAcceptedFrameCount[i] = 0;
             sourceReportedFrameRateHz[i] = 0f;
+            ResetSourceTiming(i);
         }
         lock (parseBufferLock) { parseBuffer.Clear(); }
         checksumFailCount = 0;
@@ -224,7 +241,10 @@ public class SerialParser
                     ProtocolVersion = f.ProtocolVersion,
                     HardwareId = f.HardwareId,
                     SourceSequence = f.SourceSequence,
-                    SenderTickMs = f.SenderTickMs
+                    SenderTickMs = f.SenderTickMs,
+                    SourceFlags = f.SourceFlags,
+                    SourceClockReliable = f.SourceClockReliable,
+                    SourceBacklogAgeMs = f.SourceBacklogAgeMs
                 };
                 return true;
             }
@@ -464,15 +484,25 @@ public class SerialParser
             uint hardwareId = 0;
             uint sourceSequence = 0;
             uint senderTickMs = 0;
+            byte sourceFlags = 0;
+            long arrivalStamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            DateTime arrivalUtc = DateTime.UtcNow;
             if (isV2)
             {
                 protocolVersion = payload[16];
+                sourceFlags = payload[17];
                 sourceSequence = ReadUInt32LittleEndian(payload, 18);
                 senderTickMs = ReadUInt32LittleEndian(payload, 22);
                 hardwareId = ReadUInt32LittleEndian(payload, 26);
-                hasSourceMetadata = (payload[17] & 0x01) != 0 && hardwareId != 0;
+                hasSourceMetadata = (sourceFlags & SOURCE_FLAG_METADATA_VALID) != 0 && hardwareId != 0;
                 if (!hasSourceMetadata ||
-                    !AcceptV2SourceFrame(deviceId, hardwareId, sourceSequence, senderTickMs))
+                    !AcceptV2SourceFrame(
+                        deviceId,
+                        hardwareId,
+                        sourceSequence,
+                        senderTickMs,
+                        sourceFlags,
+                        arrivalStamp))
                 {
                     bufferList.RemoveRange(0, frameSize);
                     continue;
@@ -484,13 +514,16 @@ public class SerialParser
             {
                 DeviceId = deviceId,
                 Q = q,
-                TimestampUtc = DateTime.UtcNow,
+                TimestampUtc = arrivalUtc,
                 Sequence = sequence,
                 HasSourceMetadata = hasSourceMetadata,
                 ProtocolVersion = protocolVersion,
                 HardwareId = hardwareId,
                 SourceSequence = sourceSequence,
-                SenderTickMs = senderTickMs
+                SenderTickMs = senderTickMs,
+                SourceFlags = sourceFlags,
+                SourceClockReliable = (sourceFlags & SOURCE_FLAG_HARDWARE_TIME_VALID) != 0,
+                SourceBacklogAgeMs = sourceBacklogAgeMs[deviceId]
             });
             bufferList.RemoveRange(0, frameSize);
         }
@@ -500,7 +533,9 @@ public class SerialParser
         int deviceId,
         uint hardwareId,
         uint sourceSequence,
-        uint senderTickMs)
+        uint senderTickMs,
+        byte sourceFlags,
+        long arrivalStamp)
     {
         if (!hasActiveHardwareId[deviceId])
         {
@@ -519,6 +554,7 @@ public class SerialParser
             hasLastSourceSequence[deviceId] = true;
             lastSourceSequence[deviceId] = sourceSequence;
             lastSenderTickMs[deviceId] = senderTickMs;
+            StartSourceTiming(deviceId, sourceFlags, arrivalStamp);
             sourceAcceptedFrameCount[deviceId]++;
             return true;
         }
@@ -530,6 +566,7 @@ public class SerialParser
             sourceRestartCount[deviceId]++;
             lastSourceSequence[deviceId] = sourceSequence;
             lastSenderTickMs[deviceId] = senderTickMs;
+            StartSourceTiming(deviceId, sourceFlags, arrivalStamp);
             sourceAcceptedFrameCount[deviceId]++;
             sourceReportedFrameRateHz[deviceId] = 0f;
             return true;
@@ -552,6 +589,7 @@ public class SerialParser
         // V2发送端序号与发送端毫秒计时同时推进。即使中间无线帧丢失，
         // delta/tickDelta仍可估算控制板实际发送Hz，从而与Unity实际接收Hz分离诊断。
         uint tickDelta = unchecked(senderTickMs - lastSenderTickMs[deviceId]);
+        UpdateSourceTiming(deviceId, sourceFlags, tickDelta, arrivalStamp);
         if (tickDelta > 0u && tickDelta < 600000u)
         {
             float sampleHz = delta * 1000f / tickDelta;
@@ -567,6 +605,64 @@ public class SerialParser
         lastSenderTickMs[deviceId] = senderTickMs;
         sourceAcceptedFrameCount[deviceId]++;
         return true;
+    }
+
+    private void ResetSourceTiming(int deviceId)
+    {
+        lastSourceFlags[deviceId] = 0;
+        sourceTimingStartStamp[deviceId] = 0L;
+        sourceElapsedTickMs[deviceId] = 0UL;
+        sourceMinimumOffsetSeconds[deviceId] = 0.0;
+        sourceBacklogAgeMs[deviceId] = 0f;
+        sourceMaximumBacklogAgeMs[deviceId] = 0f;
+    }
+
+    private void StartSourceTiming(int deviceId, byte sourceFlags, long arrivalStamp)
+    {
+        lastSourceFlags[deviceId] = sourceFlags;
+        sourceTimingStartStamp[deviceId] = arrivalStamp;
+        sourceElapsedTickMs[deviceId] = 0UL;
+        sourceMinimumOffsetSeconds[deviceId] = 0.0;
+        sourceBacklogAgeMs[deviceId] = 0f;
+    }
+
+    private void UpdateSourceTiming(
+        int deviceId,
+        byte sourceFlags,
+        uint tickDelta,
+        long arrivalStamp)
+    {
+        bool reliable = (sourceFlags & SOURCE_FLAG_HARDWARE_TIME_VALID) != 0;
+        bool wasReliable = (lastSourceFlags[deviceId] & SOURCE_FLAG_HARDWARE_TIME_VALID) != 0;
+        if (!reliable)
+        {
+            lastSourceFlags[deviceId] = sourceFlags;
+            sourceBacklogAgeMs[deviceId] = 0f;
+            return;
+        }
+
+        if (!wasReliable || sourceTimingStartStamp[deviceId] == 0L)
+        {
+            StartSourceTiming(deviceId, sourceFlags, arrivalStamp);
+            return;
+        }
+
+        lastSourceFlags[deviceId] = sourceFlags;
+        sourceElapsedTickMs[deviceId] += tickDelta;
+        double arrivalElapsedSeconds =
+            (arrivalStamp - sourceTimingStartStamp[deviceId]) /
+            (double)System.Diagnostics.Stopwatch.Frequency;
+        double sourceElapsedSeconds = sourceElapsedTickMs[deviceId] / 1000.0;
+        double offsetSeconds = arrivalElapsedSeconds - sourceElapsedSeconds;
+        if (offsetSeconds < sourceMinimumOffsetSeconds[deviceId])
+            sourceMinimumOffsetSeconds[deviceId] = offsetSeconds;
+
+        float backlogMs = (float)Math.Max(
+            0.0,
+            (offsetSeconds - sourceMinimumOffsetSeconds[deviceId]) * 1000.0);
+        sourceBacklogAgeMs[deviceId] = backlogMs;
+        if (backlogMs > sourceMaximumBacklogAgeMs[deviceId])
+            sourceMaximumBacklogAgeMs[deviceId] = backlogMs;
     }
 
     private static uint ReadUInt32LittleEndian(byte[] bytes, int offset)
@@ -675,6 +771,18 @@ public class SerialParser
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? lastSourceSequence[deviceId] : 0u;
     public uint GetLastSenderTickMs(int deviceId) =>
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? lastSenderTickMs[deviceId] : 0u;
+    public byte GetLastSourceFlags(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? lastSourceFlags[deviceId] : (byte)0;
+    public bool IsSourceClockReliable(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT &&
+        (lastSourceFlags[deviceId] & SOURCE_FLAG_HARDWARE_TIME_VALID) != 0;
+    public bool IsSourceMainClockHealthy(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT &&
+        (lastSourceFlags[deviceId] & SOURCE_FLAG_CLOCK_72MHZ) != 0;
+    public float GetSourceBacklogAgeMs(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? sourceBacklogAgeMs[deviceId] : 0f;
+    public float GetSourceMaximumBacklogAgeMs(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? sourceMaximumBacklogAgeMs[deviceId] : 0f;
     public long GetSourceLostFrameCount(int deviceId) =>
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? sourceLostFrameCount[deviceId] : 0L;
     public long GetSourceDuplicateFrameCount(int deviceId) =>

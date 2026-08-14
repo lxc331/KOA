@@ -49,6 +49,8 @@ public sealed class MotionDataHub
     private readonly long[] acceptedFrameCount;
     private readonly long[] anomalyFrameCount;
     private readonly long[] invalidFrameCount;
+    private readonly long[] staleSourceFrameCount;
+    private readonly float[] lastSourceBacklogAgeMs;
     private readonly long[] lastSequence;
     private readonly float[] smoothedFrameRateHz;
     private readonly float[] lastAcceptedStepAngleDeg;
@@ -88,6 +90,12 @@ public sealed class MotionDataHub
     public float MaxPredictionAngularSpeedDegPerSec { get; set; } = 35f;
     public float MaxPredictionSourceIntervalSeconds { get; set; } = 2f;
 
+    /// <summary>
+    /// Reliable source-clock frames that arrive this far behind the fastest
+    /// observed path are diagnostic history, not live pose input.
+    /// </summary>
+    public float MaximumSourceBacklogAgeSeconds { get; set; } = 0.750f;
+
     public DateTime SnapshotTimestampUtc { get; private set; }
     public long SnapshotIndex { get; private set; }
     public long BacklogDiscardedFrameCount { get; private set; }
@@ -106,6 +114,8 @@ public sealed class MotionDataHub
         acceptedFrameCount = new long[this.deviceCount];
         anomalyFrameCount = new long[this.deviceCount];
         invalidFrameCount = new long[this.deviceCount];
+        staleSourceFrameCount = new long[this.deviceCount];
+        lastSourceBacklogAgeMs = new float[this.deviceCount];
         lastSequence = new long[this.deviceCount];
         smoothedFrameRateHz = new float[this.deviceCount];
         lastAcceptedStepAngleDeg = new float[this.deviceCount];
@@ -182,6 +192,9 @@ public sealed class MotionDataHub
     public long GetAcceptedFrameCount(int deviceId) => GetCounter(acceptedFrameCount, deviceId);
     public long GetAnomalyFrameCount(int deviceId) => GetCounter(anomalyFrameCount, deviceId);
     public long GetInvalidFrameCount(int deviceId) => GetCounter(invalidFrameCount, deviceId);
+    public long GetStaleSourceFrameCount(int deviceId) => GetCounter(staleSourceFrameCount, deviceId);
+    public float GetLastSourceBacklogAgeMs(int deviceId) =>
+        deviceId >= 0 && deviceId < deviceCount ? lastSourceBacklogAgeMs[deviceId] : 0f;
     public long GetLastSequence(int deviceId) => GetCounter(lastSequence, deviceId);
     public float GetSmoothedFrameRateHz(int deviceId) =>
         deviceId >= 0 && deviceId < deviceCount ? smoothedFrameRateHz[deviceId] : 0f;
@@ -360,6 +373,8 @@ public sealed class MotionDataHub
             acceptedFrameCount[i] = 0;
             anomalyFrameCount[i] = 0;
             invalidFrameCount[i] = 0;
+            staleSourceFrameCount[i] = 0;
+            lastSourceBacklogAgeMs[i] = 0f;
             lastSequence[i] = -1;
             smoothedFrameRateHz[i] = 0f;
             lastAcceptedStepAngleDeg[i] = 0f;
@@ -381,6 +396,14 @@ public sealed class MotionDataHub
         int deviceId = frame.DeviceId;
         if (deviceId < 0 || deviceId >= deviceCount)
             return;
+
+        lastSourceBacklogAgeMs[deviceId] = Mathf.Max(0f, frame.SourceBacklogAgeMs);
+        if (frame.SourceClockReliable &&
+            frame.SourceBacklogAgeMs > Mathf.Max(50f, MaximumSourceBacklogAgeSeconds * 1000f))
+        {
+            staleSourceFrameCount[deviceId]++;
+            return;
+        }
 
         Quaternion raw = frame.Q;
         if (!IsFiniteNormalizedCandidate(raw))

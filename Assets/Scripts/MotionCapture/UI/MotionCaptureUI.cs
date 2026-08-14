@@ -552,7 +552,7 @@ public class MotionCaptureUI : MonoBehaviour
         GUI.Label(new Rect(10f, 294f, telemetryWindowRect.width - 20f, 20f),
             $"源端：丢 {controller.SourceLostFrameCount}  重复 {controller.SourceDuplicateFrameCount}  " +
             $"乱序 {controller.SourceOutOfOrderFrameCount}  CRC错 {controller.Crc16FailCount}  " +
-            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜标定自适应≤4s  运行闸门=帧龄≤1s/接收≥5Hz/新帧≥3",
+            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜标定自适应≤4s  运行闸门={controller.RuntimeGateSummary}",
             tableCellStyle);
         GUI.Label(new Rect(10f, 314f, telemetryWindowRect.width - 20f, 20f),
             string.IsNullOrEmpty(controller.LastRuntimeFaultSummary)

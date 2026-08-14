@@ -35,6 +35,7 @@ public static class SerialProtocolV2SelfTest
     {
         LegacyFrameStillParses();
         V2FrameParsesAfterFragmentedInput();
+        ReliableSourceClockFlagsAreExposed();
         CorruptedV2FrameIsRejected();
         DuplicateLogicalIdIsRejected();
         SourceSequenceDetectsLossDuplicateAndOutOfOrder();
@@ -139,6 +140,25 @@ public static class SerialProtocolV2SelfTest
         SerialParser.RawSensorFrame frame;
         Require(!parser.TryDequeueFrame(out frame), "CRC 已损坏的 V2 帧仍被接收");
         Require(parser.Crc16FailCount == 1, "CRC 失败计数未增加");
+    }
+
+    private static void ReliableSourceClockFlagsAreExposed()
+    {
+        SerialParser parser = new SerialParser();
+        Append(parser, BuildV2Frame(
+            2,
+            0x22222222u,
+            1u,
+            100u,
+            Quaternion.identity,
+            0x07));
+
+        SerialParser.RawSensorFrame frame;
+        Require(parser.TryDequeueFrame(out frame), "可靠源时钟测试帧未解析");
+        Require(frame.SourceClockReliable && frame.SourceFlags == 0x07,
+            "可靠源时钟标志未传递到业务帧");
+        Require(parser.IsSourceClockReliable(1) && parser.IsSourceMainClockHealthy(1),
+            "解析器未暴露硬件时钟/主时钟健康标志");
     }
 
     private static void DuplicateLogicalIdIsRejected()
@@ -281,7 +301,8 @@ public static class SerialProtocolV2SelfTest
         uint hardwareId,
         uint sourceSequence,
         uint senderTickMs,
-        Quaternion q)
+        Quaternion q,
+        byte sourceFlags = 0x01)
     {
         const int payloadLength = 30;
         byte[] frame = new byte[payloadLength + 6];
@@ -291,7 +312,7 @@ public static class SerialProtocolV2SelfTest
         frame[3] = payloadLength;
         WriteQuaternionWxyz(frame, 4, q);
         frame[20] = 2;
-        frame[21] = 0x01;
+        frame[21] = sourceFlags;
         WriteUInt32LittleEndian(frame, 22, sourceSequence);
         WriteUInt32LittleEndian(frame, 26, senderTickMs);
         WriteUInt32LittleEndian(frame, 30, hardwareId);
