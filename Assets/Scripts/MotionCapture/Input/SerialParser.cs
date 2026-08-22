@@ -20,6 +20,8 @@ public class SerialParser
     private const byte SOURCE_FLAG_METADATA_VALID = 0x01;
     private const byte SOURCE_FLAG_HARDWARE_TIME_VALID = 0x02;
     private const byte SOURCE_FLAG_CLOCK_72MHZ = 0x04;
+    private const byte SOURCE_FLAG_SLOTTED_TRANSMIT = 0x08;
+    private const byte SOURCE_FLAG_LINK_SYNCED = 0x10;
 
     Parity parity;
     int dataBits;
@@ -779,6 +781,12 @@ public class SerialParser
     public bool IsSourceMainClockHealthy(int deviceId) =>
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT &&
         (lastSourceFlags[deviceId] & SOURCE_FLAG_CLOCK_72MHZ) != 0;
+    public bool IsSourceSlottedTransmit(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT &&
+        (lastSourceFlags[deviceId] & SOURCE_FLAG_SLOTTED_TRANSMIT) != 0;
+    public bool IsSourceLinkSynchronized(int deviceId) =>
+        deviceId >= 0 && deviceId < MAX_DEVICE_COUNT &&
+        (lastSourceFlags[deviceId] & SOURCE_FLAG_LINK_SYNCED) != 0;
     public float GetSourceBacklogAgeMs(int deviceId) =>
         deviceId >= 0 && deviceId < MAX_DEVICE_COUNT ? sourceBacklogAgeMs[deviceId] : 0f;
     public float GetSourceMaximumBacklogAgeMs(int deviceId) =>

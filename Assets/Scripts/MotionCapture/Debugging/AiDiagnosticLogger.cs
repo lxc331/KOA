@@ -60,6 +60,8 @@ public sealed class AiDiagnosticLogger : IDisposable
         public int SourceFlags;
         public bool SourceClockReliable;
         public bool SourceMainClockHealthy;
+        public bool SourceSlottedTransmit;
+        public bool SourceLinkSynchronized;
         public float SourceBacklogAgeMs;
         public float SourceMaximumBacklogAgeMs;
         public long SourceStaleRejected;
@@ -224,6 +226,8 @@ public sealed class AiDiagnosticLogger : IDisposable
                 AppendNumber(sb, "source_flags", s.SourceFlags); sb.Append(',');
                 AppendBoolean(sb, "source_clock_reliable", s.SourceClockReliable); sb.Append(',');
                 AppendBoolean(sb, "source_main_clock_healthy", s.SourceMainClockHealthy); sb.Append(',');
+                AppendBoolean(sb, "source_slotted_transmit", s.SourceSlottedTransmit); sb.Append(',');
+                AppendBoolean(sb, "source_link_synchronized", s.SourceLinkSynchronized); sb.Append(',');
                 AppendFloat(sb, "source_backlog_age_ms", s.SourceBacklogAgeMs); sb.Append(',');
                 AppendFloat(sb, "source_max_backlog_age_ms", s.SourceMaximumBacklogAgeMs); sb.Append(',');
                 AppendNumber(sb, "source_stale_rejected", s.SourceStaleRejected); sb.Append(',');

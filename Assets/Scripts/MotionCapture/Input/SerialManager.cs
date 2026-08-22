@@ -192,11 +192,26 @@ public class SerialManager : IDisposable
         return Connect(baud);
     }
 
+    /// <summary>广播一次发送频率和统一时隙起点。九块 V8.19 固件会各自按 ID 选取时隙。</summary>
+    public bool ConfigureScheduledLink(int transmitRateHz, uint syncToken)
+    {
+        return controller != null && controller.TryWrite(
+            LinkControlProtocol.BuildConfigureAndSync(transmitRateHz, syncToken));
+    }
+
+    /// <summary>要求节点停止上行；传感器采集仍继续，下一次同步命令会恢复发送。</summary>
+    public bool PauseScheduledLink()
+    {
+        return controller != null && controller.TryWrite(LinkControlProtocol.BuildPause());
+    }
+
     /// <summary>
     /// 断开串口连接。底层会终止后台读取线程。
     /// </summary>
     public void Disconnect()
     {
+        if (IsConnected)
+            PauseScheduledLink();
         controller?.Disconnect();
     }
 
@@ -215,6 +230,5 @@ public class SerialManager : IDisposable
         Disconnect();
     }
 }
-
 
 

@@ -69,6 +69,32 @@ public class SerialController
         IsConnected = false;
     }
 
+    /// <summary>
+    /// Thread-safe binary downlink used for one-shot Zigbee schedule control.
+    /// Reading stays on the background thread; writing is short and synchronous.
+    /// </summary>
+    public bool TryWrite(byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0)
+            return false;
+
+        lock (portLock)
+        {
+            try
+            {
+                if (serialPort == null || !serialPort.IsOpen)
+                    return false;
+                serialPort.Write(bytes, 0, bytes.Length);
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError("SerialController: Write failed: " + ex.Message);
+                return false;
+            }
+        }
+    }
+
     private bool OpenPort(string portName, int baudRate = 115200, Parity parity = Parity.None, int dataBits = 8, StopBits stopBits = StopBits.One, int readTimeoutMs = 50)
     {
         try

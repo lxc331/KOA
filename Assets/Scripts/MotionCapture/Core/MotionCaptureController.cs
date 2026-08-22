@@ -3,7 +3,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// V8.15 九传感器全身诊断与AI增量日志版。
+/// V8.19 九传感器错峰通信、全身诊断与AI增量日志版。
 /// - 强制选择01~09，所有传感器均参与稳定检查、标定和骨骼驱动；
 /// - 01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂，05驱动躯干；
 /// - 06+07、08+09分别驱动左右大小腿及膝关节；
@@ -12,7 +12,7 @@ using UnityEngine;
 /// </summary>
 public class MotionCaptureController : MonoBehaviour
 {
-    public const string BuildVersion = "V8.18-SOURCE-CLOCK-INDEPENDENT-BONES-20260814";
+    public const string BuildVersion = "V8.19-ZIGBEE-SLOTTED-LATEST-20260820";
     private const int CalibrationSamplesPerRequiredSensor = 5;
 
     public enum SensorCalibrationUiState
@@ -73,6 +73,12 @@ public class MotionCaptureController : MonoBehaviour
     [Header("运行模式")]
     [Tooltip("旧场景兼容字段。V8任意组合模式下不再依赖它决定必须连接哪些传感器。")]
     public bool armOnlyMode = false;
+
+    [Header("V8.19 Zigbee错峰传输")]
+    [Tooltip("连接后广播一次同步命令，让九块V8.19固件按设备ID进入各自时隙。旧固件会忽略该命令。")]
+    [SerializeField] private bool configureZigbeeScheduleOnConnect = true;
+    [Tooltip("第一阶段固定使用每路8Hz，九路合计约72包/秒，为无线维护和重发留余量。")]
+    [SerializeField, Range(1, 10)] private int zigbeeScheduledTransmitRateHz = 8;
 
     [Header("V8.11 九传感器全身诊断")]
     [Tooltip("开启后强制01~09全部参与标定和驱动，覆盖旧场景中只测试03的序列化设置。")]
@@ -579,7 +585,7 @@ public class MotionCaptureController : MonoBehaviour
         Application.runInBackground = true;
 
         Debug.LogWarning("\n==================================================\n" +
-            "[V8.18 ACTIVE] MotionCaptureController.Awake\n" +
+            "[V8.19 ACTIVE] MotionCaptureController.Awake\n" +
             "Build=" + BuildVersion + "\n" +
             "模式：强制选择01~09，九路全部参与稳定检查、标定和驱动\n" +
             "上肢：01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂\n" +
@@ -757,7 +763,7 @@ public class MotionCaptureController : MonoBehaviour
 
         BindUIEvents();
 
-        Debug.LogWarning($"[V8.18 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；标定完成直接进入逐骨骼独立驱动；运行帧龄门限={runtimeDeviceTimeoutSeconds:F1}s；AI诊断日志=连接即增量写盘；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
+        Debug.LogWarning($"[V8.19 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；连接后广播{zigbeeScheduledTransmitRateHz}Hz错峰同步；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；标定完成直接进入逐骨骼独立驱动；运行帧龄门限={runtimeDeviceTimeoutSeconds:F1}s；AI诊断日志=连接即增量写盘；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
     }
 
     private void Update()
@@ -1058,6 +1064,8 @@ public class MotionCaptureController : MonoBehaviour
                 SourceFlags = hasV2 ? parser.GetLastSourceFlags(i) : 0,
                 SourceClockReliable = hasV2 && parser.IsSourceClockReliable(i),
                 SourceMainClockHealthy = hasV2 && parser.IsSourceMainClockHealthy(i),
+                SourceSlottedTransmit = hasV2 && parser.IsSourceSlottedTransmit(i),
+                SourceLinkSynchronized = hasV2 && parser.IsSourceLinkSynchronized(i),
                 SourceBacklogAgeMs = hasV2 ? parser.GetSourceBacklogAgeMs(i) : 0f,
                 SourceMaximumBacklogAgeMs = hasV2 ? parser.GetSourceMaximumBacklogAgeMs(i) : 0f,
                 SourceStaleRejected = processor?.DataHub != null
@@ -1172,10 +1180,23 @@ public class MotionCaptureController : MonoBehaviour
         processor?.DataHub?.Reset();
         ClearDeviceAvailability();
         bool connected = Serial.Connect(port, baud);
+        bool scheduleCommandSent = false;
+        uint scheduleToken = unchecked((uint)Environment.TickCount);
+        if (connected && configureZigbeeScheduleOnConnect)
+        {
+            int rateHz = Mathf.Clamp(zigbeeScheduledTransmitRateHz, 1, 10);
+            scheduleCommandSent = Serial.ConfigureScheduledLink(rateHz, scheduleToken);
+            aiDiagnosticLogger?.LogEvent(
+                scheduleCommandSent ? "zigbee_schedule_sent" : "zigbee_schedule_send_failed",
+                scheduleCommandSent ? "LINK_CONFIGURED" : "LINK_CONFIG_FAILED",
+                $"广播错峰配置：{rateHz}Hz，Token=0x{scheduleToken:X8}；节点V2标志bit4用于确认是否收到");
+        }
         aiDiagnosticLogger?.LogEvent(
             connected ? "connect_succeeded" : "connect_failed",
             connected ? "CONNECTED" : "CONNECT_FAILED",
-            connected ? $"串口已打开：{port}@{baud}" : $"串口打开失败：{port}@{baud}");
+            connected
+                ? $"串口已打开：{port}@{baud}；错峰同步={(configureZigbeeScheduleOnConnect ? (scheduleCommandSent ? "已发送" : "发送失败") : "关闭")}"
+                : $"串口打开失败：{port}@{baud}");
         WriteAiDiagnosticSnapshot("connect_result");
     }
 
@@ -1617,6 +1638,28 @@ public class MotionCaptureController : MonoBehaviour
         Serial?.Parser != null && IndexInRange(sensorIndex)
             ? Serial.Parser.GetSourceDeliveryPercent(sensorIndex)
             : 0f;
+
+    public int SlottedSourceCount => CountSources(false);
+    public int SynchronizedSourceCount => CountSources(true);
+
+    private int CountSources(bool synchronizedOnly)
+    {
+        SerialParser parser = Serial?.Parser;
+        if (parser == null)
+            return 0;
+
+        int count = 0;
+        int deviceCount = config != null ? Mathf.Max(0, config.deviceCount) : 9;
+        for (int i = 0; i < deviceCount; i++)
+        {
+            bool enabled = synchronizedOnly
+                ? parser.IsSourceLinkSynchronized(i)
+                : parser.IsSourceSlottedTransmit(i);
+            if (enabled)
+                count++;
+        }
+        return count;
+    }
 
     public bool IsSensorRuntimeReady(int sensorIndex)
     {
@@ -2318,7 +2361,7 @@ public class MotionCaptureController : MonoBehaviour
             calibrationCountdownStatus,
             "per_bone_freshness_gate=true, global_nine_sensor_gate=false");
         WriteAiDiagnosticSnapshot("independent_runtime_started");
-        Debug.LogWarning($"[V8.18][IndependentRuntimeStarted] {calibrationCountdownStatus}");
+        Debug.LogWarning($"[V8.19][IndependentRuntimeStarted] {calibrationCountdownStatus}");
     }
 
     private void CancelCalibrationCountdown(string reason)
@@ -2989,7 +3032,7 @@ public class MotionCaptureController : MonoBehaviour
             $"low_rate_compat={lowRateRuntimeCompatibilityEnabled}, min_receive_hz={runtimeMinimumFrameRateHz:F1}, base_age_s={runtimeDeviceTimeoutSeconds:F1}, warmup_frames={runtimeReadinessMinimumUniqueFrames}");
         WriteAiDiagnosticSnapshot(wasRuntimeRecovery ? "runtime_recovered" : "runtime_gate_passed");
         Debug.LogWarning(
-            $"[V8.18][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
+            $"[V8.19][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
             (wasRuntimeRecovery ? "沿用已锁存标定恢复驱动" : "首次进入驱动"));
         return true;
     }

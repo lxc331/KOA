@@ -36,6 +36,7 @@ public static class SerialProtocolV2SelfTest
         LegacyFrameStillParses();
         V2FrameParsesAfterFragmentedInput();
         ReliableSourceClockFlagsAreExposed();
+        LinkControlFramesHaveStableLayoutAndCrc();
         CorruptedV2FrameIsRejected();
         DuplicateLogicalIdIsRejected();
         SourceSequenceDetectsLossDuplicateAndOutOfOrder();
@@ -151,14 +152,43 @@ public static class SerialProtocolV2SelfTest
             1u,
             100u,
             Quaternion.identity,
-            0x07));
+            0x1F));
 
         SerialParser.RawSensorFrame frame;
         Require(parser.TryDequeueFrame(out frame), "可靠源时钟测试帧未解析");
-        Require(frame.SourceClockReliable && frame.SourceFlags == 0x07,
+        Require(frame.SourceClockReliable && frame.SourceFlags == 0x1F,
             "可靠源时钟标志未传递到业务帧");
         Require(parser.IsSourceClockReliable(1) && parser.IsSourceMainClockHealthy(1),
             "解析器未暴露硬件时钟/主时钟健康标志");
+        Require(parser.IsSourceSlottedTransmit(1) && parser.IsSourceLinkSynchronized(1),
+            "解析器未暴露错峰发送/链路同步标志");
+    }
+
+    private static void LinkControlFramesHaveStableLayoutAndCrc()
+    {
+        const uint token = 0x78563412u;
+        byte[] configure = LinkControlProtocol.BuildConfigureAndSync(8, token);
+        Require(configure.Length == 12, "错峰配置帧长度错误");
+        Require(configure[0] == 0xA5 && configure[1] == 0x5A &&
+                configure[2] == 1 && configure[3] == 0x01 && configure[4] == 5,
+            "错峰配置帧头、版本、命令或载荷长度错误");
+        Require(configure[5] == 8 && configure[6] == 0x12 && configure[7] == 0x34 &&
+                configure[8] == 0x56 && configure[9] == 0x78,
+            "错峰配置的频率或同步Token编码错误");
+        RequireFrameCrc(configure, "错峰配置帧CRC错误");
+
+        byte[] pause = LinkControlProtocol.BuildPause();
+        Require(pause.Length == 7 && pause[3] == 0x02 && pause[4] == 0,
+            "暂停命令布局错误");
+        RequireFrameCrc(pause, "暂停命令CRC错误");
+    }
+
+    private static void RequireFrameCrc(byte[] frame, string message)
+    {
+        ushort expected = Crc16Ccitt(frame, frame.Length - 2);
+        ushort actual = (ushort)(frame[frame.Length - 2] | (frame[frame.Length - 1] << 8));
+        Require(expected == actual &&
+                expected == LinkControlProtocol.ComputeCrc16Ccitt(frame, frame.Length - 2), message);
     }
 
     private static void DuplicateLogicalIdIsRejected()
