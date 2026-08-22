@@ -3,7 +3,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// V8.19 九传感器错峰通信、全身诊断与AI增量日志版。
+/// V8.20 九传感器时间配对驱动、断流保持与错峰自恢复版。
 /// - 强制选择01~09，所有传感器均参与稳定检查、标定和骨骼驱动；
 /// - 01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂，05驱动躯干；
 /// - 06+07、08+09分别驱动左右大小腿及膝关节；
@@ -12,7 +12,7 @@ using UnityEngine;
 /// </summary>
 public class MotionCaptureController : MonoBehaviour
 {
-    public const string BuildVersion = "V8.19-ZIGBEE-SLOTTED-LATEST-20260820";
+    public const string BuildVersion = "V8.20-PAIR-HOLD-RESYNC-20260822";
     private const int CalibrationSamplesPerRequiredSensor = 5;
 
     public enum SensorCalibrationUiState
@@ -74,11 +74,15 @@ public class MotionCaptureController : MonoBehaviour
     [Tooltip("旧场景兼容字段。V8任意组合模式下不再依赖它决定必须连接哪些传感器。")]
     public bool armOnlyMode = false;
 
-    [Header("V8.19 Zigbee错峰传输")]
-    [Tooltip("连接后广播一次同步命令，让九块V8.19固件按设备ID进入各自时隙。旧固件会忽略该命令。")]
+    [Header("V8.20 Zigbee错峰传输与自动恢复")]
+    [Tooltip("连接后广播同步命令，并在节点漏同步或重启后自动重发。旧固件会忽略该命令。")]
     [SerializeField] private bool configureZigbeeScheduleOnConnect = true;
     [Tooltip("第一阶段固定使用每路8Hz，九路合计约72包/秒，为无线维护和重发留余量。")]
     [SerializeField, Range(1, 10)] private int zigbeeScheduledTransmitRateHz = 8;
+    [Tooltip("仍有V2节点未同步时的重发间隔。重复同步帧很短，不会占用姿态主链路。")]
+    [SerializeField, Range(1f, 10f)] private float zigbeeScheduleRetrySeconds = 3f;
+    [Tooltip("全部节点同步后仍定期维护一次，用于自动恢复测试中途重启的节点。")]
+    [SerializeField, Range(10f, 60f)] private float zigbeeScheduleMaintenanceSeconds = 30f;
 
     [Header("V8.11 九传感器全身诊断")]
     [Tooltip("开启后强制01~09全部参与标定和驱动，覆盖旧场景中只测试03的序列化设置。")]
@@ -131,6 +135,10 @@ public class MotionCaptureController : MonoBehaviour
     [SerializeField, Range(0.15f, 0.80f)] private float kneeMeasurementMaxPairSkewSeconds = 0.50f;
     [Tooltip("配对数据超过该年龄后保持最后可信角度并标记陈旧，不继续输出新错误值。")]
     [SerializeField, Range(0.2f, 1f)] private float kneeMeasurementMaxFreshAgeSeconds = 0.50f;
+    [Tooltip("人物小腿实际驱动使用的严格配对门限。8Hz九时隙一轮最大理论错位约111ms，默认200ms留少量抖动余量。")]
+    [SerializeField, Range(0.10f, 0.40f)] private float legDriveMaxPairSkewSeconds = 0.20f;
+    [Tooltip("时间配对姿态超过该年龄时只保持小腿最后姿势，不再把旧的大腿/小腿组合写入骨骼。")]
+    [SerializeField, Range(0.25f, 1f)] private float legDriveMaxPairAgeSeconds = 0.65f;
 
     [Header("V77.30 低时延输出")]
     [Tooltip("腿部输入层低通。默认关闭，只保留最终骨骼输出层Slerp，避免双重平滑。")]
@@ -139,6 +147,10 @@ public class MotionCaptureController : MonoBehaviour
     [SerializeField] private bool runtimeSmoothingEnabled = true;
     [Tooltip("腿部唯一输出层的平滑速度。30时约77ms达到目标90%，明显低于旧版双层约390ms。")]
     [SerializeField, Range(5f, 60f)] private float legOutputSmoothingSpeed = 30f;
+    [Tooltip("即使通信恢复后目标相差很大，腿部每秒最多追赶的角度，避免一帧跳到新姿态。")]
+    [SerializeField, Range(90f, 540f)] private float legMaximumAngularSpeedDegPerSec = 240f;
+    [Tooltip("手臂和躯干恢复后的最大追赶角速度。")]
+    [SerializeField, Range(90f, 720f)] private float upperBodyMaximumAngularSpeedDegPerSec = 300f;
 
     [Header("左腿调试开关 - Inspector 必须显示")]
     public bool driveLeftLeg = true;
@@ -323,6 +335,12 @@ public class MotionCaptureController : MonoBehaviour
     public float RightKneeIncludedAngleDeg => rightLegDriver != null ? rightLegDriver.CurrentKneeIncludedAngleDeg : 180f;
     public bool LeftKneeMeasurementFresh => leftLegDriver != null && leftLegDriver.IsKneeMeasurementFresh;
     public bool RightKneeMeasurementFresh => rightLegDriver != null && rightLegDriver.IsKneeMeasurementFresh;
+    public bool LeftLegDrivePairFresh => leftCalfParticipatesInCalibration && !leftLegPairHeld &&
+                                         lastLeftLegDrivePairTimestampUtc != DateTime.MinValue;
+    public bool RightLegDrivePairFresh => rightCalfParticipatesInCalibration && !rightLegPairHeld &&
+                                          lastRightLegDrivePairTimestampUtc != DateTime.MinValue;
+    public long LeftLegPairHoldCount => leftLegPairHoldCount;
+    public long RightLegPairHoldCount => rightLegPairHoldCount;
 
     private SensorDataProcessor processor;
     private TelemetryLogger logger;
@@ -348,6 +366,21 @@ public class MotionCaptureController : MonoBehaviour
     private StandaloneBonePoseDriver rightStandaloneCalfDriver;
     private StandaloneBonePoseDriver[] genericStandaloneDrivers;
     private float kneeMeasurementCalibrationDeadlineTime = -1f;
+    private Quaternion[] leftLegDriveInput;
+    private Quaternion[] rightLegDriveInput;
+    private bool leftLegPairHeld;
+    private bool rightLegPairHeld;
+    private long leftLegPairHoldCount;
+    private long rightLegPairHoldCount;
+    private DateTime lastLeftLegDrivePairTimestampUtc = DateTime.MinValue;
+    private DateTime lastRightLegDrivePairTimestampUtc = DateTime.MinValue;
+    private double lastLeftLegDrivePairSkewSeconds = double.PositiveInfinity;
+    private double lastRightLegDrivePairSkewSeconds = double.PositiveInfinity;
+    private float nextZigbeeScheduleSyncTime = -1f;
+    private uint zigbeeScheduleToken;
+    private int lastReportedSynchronizedSourceCount = -1;
+    private long[] observedSourceRestartCounts;
+    private float[] lastLegInputStepLogTimes;
 
     // V2 单人标定状态：每一路只消费自己的真实新帧，任何一路都不会阻塞其他传感器累计。
     private bool calibrationCountdownActive;
@@ -545,6 +578,10 @@ public class MotionCaptureController : MonoBehaviour
         runtimeReadinessMinimumUniqueFrames = 3;
         runtimeReadinessHoldSeconds = 1.000f;
         kneeMeasurementMaxFreshAgeSeconds = 0.500f;
+        legDriveMaxPairSkewSeconds = 0.200f;
+        legDriveMaxPairAgeSeconds = 0.650f;
+        legMaximumAngularSpeedDegPerSec = 240f;
+        upperBodyMaximumAngularSpeedDegPerSec = 300f;
 
         // 保留Inspector中的驱动选择，不再在预设函数里强制开启两条腿或锁死小腿。
         // V8默认允许左右小腿驱动；若小腿未连接，本轮自动退化为仅大腿测试。
@@ -585,7 +622,7 @@ public class MotionCaptureController : MonoBehaviour
         Application.runInBackground = true;
 
         Debug.LogWarning("\n==================================================\n" +
-            "[V8.19 ACTIVE] MotionCaptureController.Awake\n" +
+            "[V8.20 ACTIVE] MotionCaptureController.Awake\n" +
             "Build=" + BuildVersion + "\n" +
             "模式：强制选择01~09，九路全部参与稳定检查、标定和驱动\n" +
             "上肢：01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂\n" +
@@ -594,10 +631,10 @@ public class MotionCaptureController : MonoBehaviour
             "在线/稳定：按每路实测Hz自适应离线宽限；单次尖峰不立即清空稳定状态\n" +
             "界面：保留V1高对比深色遥测表；通信与历史标定结果分栏显示\n" +
             "低频：01/03/06/08启用200ms/7°限幅短时预测；积压仍只取最新姿态\n" +
-            "膝角：成对在线时按时间配对并提取铰链分量\n" +
+            "膝角/小腿驱动：仅消费严格时间配对数据；配对空档保持最后安全姿势\n" +
             "数据：SerialParser原始校验 -> MotionDataHub最新快照/超时 -> 单一快照分发\n" +
             "运行闸门：标定先锁定；九路各自达到1秒帧龄、5Hz和3个新帧后才驱动\n" +
-            "故障隔离：暂停只恢复骨骼，不清空DataHub、Hz、帧龄和源端丢帧诊断\n" +
+            "故障隔离：单路断流保持最后骨骼姿势；恢复时限速追赶，不清空诊断\n" +
             "==================================================");
 
         if (config == null)
@@ -624,6 +661,10 @@ public class MotionCaptureController : MonoBehaviour
         runtimeReadinessStartSequences = new long[config.deviceCount];
         runtimeFaultCounts = new int[config.deviceCount];
         runtimeInputUnavailable = new bool[config.deviceCount];
+        leftLegDriveInput = new Quaternion[config.deviceCount];
+        rightLegDriveInput = new Quaternion[config.deviceCount];
+        observedSourceRestartCounts = new long[config.deviceCount];
+        lastLegInputStepLogTimes = new float[config.deviceCount];
         standaloneSamplingQuaternionSums = new Vector4[config.deviceCount];
         standaloneSamplingHemisphereReferences = new Quaternion[config.deviceCount];
     }
@@ -670,6 +711,7 @@ public class MotionCaptureController : MonoBehaviour
             InputLowPassEnabled = legInputLowPassEnabled,
             SmoothingEnabled = runtimeSmoothingEnabled,
             SmoothingSpeed = legOutputSmoothingSpeed,
+            MaximumAngularSpeedDegPerSec = legMaximumAngularSpeedDegPerSec,
             DebugLogInterval = 0.25f,
             CalibrationSampleFramesRequired = Mathf.Max(1, leftLegCalibrationSampleFramesRequired),
             DriveCalf = driveLeftCalf,
@@ -690,6 +732,7 @@ public class MotionCaptureController : MonoBehaviour
             InputLowPassEnabled = legInputLowPassEnabled,
             SmoothingEnabled = runtimeSmoothingEnabled,
             SmoothingSpeed = legOutputSmoothingSpeed,
+            MaximumAngularSpeedDegPerSec = legMaximumAngularSpeedDegPerSec,
             DebugLogInterval = 0.25f,
             CalibrationSampleFramesRequired = Mathf.Max(1, rightLegCalibrationSampleFramesRequired),
             DriveCalf = driveRightCalf,
@@ -711,12 +754,14 @@ public class MotionCaptureController : MonoBehaviour
         leftStandaloneCalfDriver = new StandaloneBonePoseDriver
         {
             SmoothingEnabled = runtimeSmoothingEnabled,
-            SmoothingSpeed = legOutputSmoothingSpeed
+            SmoothingSpeed = legOutputSmoothingSpeed,
+            MaximumAngularSpeedDegPerSec = legMaximumAngularSpeedDegPerSec
         };
         rightStandaloneCalfDriver = new StandaloneBonePoseDriver
         {
             SmoothingEnabled = runtimeSmoothingEnabled,
-            SmoothingSpeed = legOutputSmoothingSpeed
+            SmoothingSpeed = legOutputSmoothingSpeed,
+            MaximumAngularSpeedDegPerSec = legMaximumAngularSpeedDegPerSec
         };
         int genericCount = config != null ? Mathf.Max(9, config.deviceCount) : 9;
         genericStandaloneDrivers = new StandaloneBonePoseDriver[genericCount];
@@ -726,7 +771,8 @@ public class MotionCaptureController : MonoBehaviour
             genericStandaloneDrivers[i] = new StandaloneBonePoseDriver
             {
                 SmoothingEnabled = runtimeSmoothingEnabled,
-                SmoothingSpeed = legOutputSmoothingSpeed
+                SmoothingSpeed = legOutputSmoothingSpeed,
+                MaximumAngularSpeedDegPerSec = upperBodyMaximumAngularSpeedDegPerSec
             };
         }
         ApplyInspectorSettingsToArmDriver();
@@ -763,7 +809,7 @@ public class MotionCaptureController : MonoBehaviour
 
         BindUIEvents();
 
-        Debug.LogWarning($"[V8.19 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；连接后广播{zigbeeScheduledTransmitRateHz}Hz错峰同步；测试选择={SensorTestSelectionSummary}；各通道{CalibrationSamplesPerRequiredSensor}帧独立累计；标定门限=每路约4周期/最大4秒；标定完成直接进入逐骨骼独立驱动；运行帧龄门限={runtimeDeviceTimeoutSeconds:F1}s；AI诊断日志=连接即增量写盘；01~09全部参与；后台运行={Application.runInBackground}；输出平滑={runtimeSmoothingEnabled}@{legOutputSmoothingSpeed:F0}");
+        Debug.LogWarning($"[V8.20 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；{zigbeeScheduledTransmitRateHz}Hz错峰自动重同步；测试选择={SensorTestSelectionSummary}；腿部配对≤{legDriveMaxPairSkewSeconds * 1000f:F0}ms/年龄≤{legDriveMaxPairAgeSeconds * 1000f:F0}ms；单路断流保持；恢复限速腿={legMaximumAngularSpeedDegPerSec:F0}°/s、上肢={upperBodyMaximumAngularSpeedDegPerSec:F0}°/s；AI诊断日志=连接即增量写盘；后台运行={Application.runInBackground}");
     }
 
     private void Update()
@@ -772,6 +818,7 @@ public class MotionCaptureController : MonoBehaviour
 
         // 本帧只从唯一入口消费串口数据。稳定计数在真实新帧回调中更新。
         processor.UpdateFromParser(Serial.Parser, State, OnFrameDequeued);
+        MaintainZigbeeScheduleSynchronization();
         processor.UpdateStability(State);
         bool runtimeFaultStoppedDriving = TryHandleRuntimeLinkFault();
         if (!runtimeFaultStoppedDriving)
@@ -849,20 +896,22 @@ public class MotionCaptureController : MonoBehaviour
         bool rightThighFresh = IsSensorFreshForDriving(RightThighSensorIndex);
         bool rightCalfFresh = IsSensorFreshForDriving(RightCalfSensorIndex);
 
-        ResetBoneToRestIfUnavailable(LeftThighIndex, leftLegParticipatesInCalibration, leftThighFresh);
-        ResetBoneToRestIfUnavailable(LeftCalfIndex, leftCalfParticipatesInCalibration, leftThighFresh && leftCalfFresh);
-        ResetBoneToRestIfUnavailable(RightThighIndex, rightLegParticipatesInCalibration, rightThighFresh);
-        ResetBoneToRestIfUnavailable(RightCalfIndex, rightCalfParticipatesInCalibration, rightThighFresh && rightCalfFresh);
+        // V8.20：单路短时断流只停止消费该路，不把骨骼写回Rest。
+        // 这样不会在“超时/恢复”之间反复跳回初始姿势；恢复时由驱动器限速追赶。
+        bool leftPairAvailable = PrepareTimePairedLegDriveInput(
+            true, leftThighFresh, leftCalfFresh, out Quaternion[] leftInput);
+        bool rightPairAvailable = PrepareTimePairedLegDriveInput(
+            false, rightThighFresh, rightCalfFresh, out Quaternion[] rightInput);
 
         if (leftLegParticipatesInCalibration && leftLegDriver != null && leftLegDriver.IsCalibrated &&
             leftThighFresh)
         {
             bool applied = leftLegDriver.ApplyAvailable(
-                processor.TransformedQuaternions,
+                leftInput,
                 GetBoneTransform(LeftThighIndex),
                 GetBoneTransform(LeftCalfIndex),
                 leftThighFresh,
-                leftCalfFresh);
+                leftPairAvailable);
             if (!applied && !string.IsNullOrEmpty(leftLegDriver.LastError))
                 Debug.LogWarning($"[LeftLegDrive] 本帧未应用：{leftLegDriver.LastError}");
         }
@@ -871,11 +920,11 @@ public class MotionCaptureController : MonoBehaviour
             rightThighFresh)
         {
             bool applied = rightLegDriver.ApplyAvailable(
-                processor.TransformedQuaternions,
+                rightInput,
                 GetBoneTransform(RightThighIndex),
                 GetBoneTransform(RightCalfIndex),
                 rightThighFresh,
-                rightCalfFresh);
+                rightPairAvailable);
             if (!applied && !string.IsNullOrEmpty(rightLegDriver.LastError))
                 Debug.LogWarning($"[RightLegDrive] 本帧未应用：{rightLegDriver.LastError}");
         }
@@ -887,6 +936,7 @@ public class MotionCaptureController : MonoBehaviour
         {
             leftStandaloneCalfDriver.SmoothingEnabled = runtimeSmoothingEnabled;
             leftStandaloneCalfDriver.SmoothingSpeed = Mathf.Max(0.01f, legOutputSmoothingSpeed);
+            leftStandaloneCalfDriver.MaximumAngularSpeedDegPerSec = Mathf.Clamp(legMaximumAngularSpeedDegPerSec, 90f, 540f);
             bool applied = leftStandaloneCalfDriver.Apply(
                 transformed[LeftCalfSensorIndex], GetBoneTransform(LeftCalfIndex));
             if (!applied && !string.IsNullOrEmpty(leftStandaloneCalfDriver.LastError))
@@ -899,6 +949,7 @@ public class MotionCaptureController : MonoBehaviour
         {
             rightStandaloneCalfDriver.SmoothingEnabled = runtimeSmoothingEnabled;
             rightStandaloneCalfDriver.SmoothingSpeed = Mathf.Max(0.01f, legOutputSmoothingSpeed);
+            rightStandaloneCalfDriver.MaximumAngularSpeedDegPerSec = Mathf.Clamp(legMaximumAngularSpeedDegPerSec, 90f, 540f);
             bool applied = rightStandaloneCalfDriver.Apply(
                 transformed[RightCalfSensorIndex], GetBoneTransform(RightCalfIndex));
             if (!applied && !string.IsNullOrEmpty(rightStandaloneCalfDriver.LastError))
@@ -912,10 +963,7 @@ public class MotionCaptureController : MonoBehaviour
         bool leftForeArmFresh = IsSensorFreshForDriving(LeftForeArmIndex);
         bool rightArmFresh = IsSensorFreshForDriving(RightArmIndex);
         bool rightForeArmFresh = IsSensorFreshForDriving(RightForeArmIndex);
-        ResetBoneToRestIfUnavailable(LeftArmIndex, leftArmParticipatesInCalibration, leftArmFresh);
-        ResetBoneToRestIfUnavailable(LeftForeArmIndex, driveLeftForeArm, leftForeArmFresh);
-        ResetBoneToRestIfUnavailable(RightArmIndex, rightArmParticipatesInCalibration, rightArmFresh);
-        ResetBoneToRestIfUnavailable(RightForeArmIndex, driveRightForeArm, rightForeArmFresh);
+        // 手臂也采用同样的“断流保持”策略；不可用通道不会传给ArmPoseDriver。
 
         if ((leftArmParticipatesInCalibration || rightArmParticipatesInCalibration) &&
             armDriver != null && armDriver.IsCalibrated &&
@@ -955,6 +1003,7 @@ public class MotionCaptureController : MonoBehaviour
         if (driver == null || !driver.IsCalibrated) return;
         driver.SmoothingEnabled = runtimeSmoothingEnabled;
         driver.SmoothingSpeed = Mathf.Max(0.01f, legOutputSmoothingSpeed);
+        driver.MaximumAngularSpeedDegPerSec = Mathf.Clamp(upperBodyMaximumAngularSpeedDegPerSec, 90f, 720f);
         if (!driver.Apply(transformed[sensorIndex], GetBoneTransform(sensorIndex)) &&
             !string.IsNullOrEmpty(driver.LastError))
             Debug.LogWarning($"[GenericStandaloneDrive {sensorIndex + 1:00}] 本帧未应用：{driver.LastError}");
@@ -1077,6 +1126,22 @@ public class MotionCaptureController : MonoBehaviour
                 CalibrationRejected = GetSensorCalibrationRejectedSamples(i),
                 CalibrationRestarts = GetSensorCalibrationRestartCount(i),
                 RuntimeFaults = GetSensorRuntimeFaultCount(i),
+                LegPairRequired = i == LeftThighSensorIndex || i == LeftCalfSensorIndex
+                    ? leftCalfParticipatesInCalibration
+                    : (i == RightThighSensorIndex || i == RightCalfSensorIndex) && rightCalfParticipatesInCalibration,
+                LegPairFresh = i == LeftThighSensorIndex || i == LeftCalfSensorIndex
+                    ? leftCalfParticipatesInCalibration && LeftLegDrivePairFresh
+                    : (i == RightThighSensorIndex || i == RightCalfSensorIndex) &&
+                      rightCalfParticipatesInCalibration && RightLegDrivePairFresh,
+                LegPairSkewMs = i == LeftThighSensorIndex || i == LeftCalfSensorIndex
+                    ? lastLeftLegDrivePairSkewSeconds * 1000d
+                    : (i == RightThighSensorIndex || i == RightCalfSensorIndex)
+                        ? lastRightLegDrivePairSkewSeconds * 1000d
+                        : double.PositiveInfinity,
+                LegPairAgeMs = GetLegDrivePairAgeMilliseconds(i),
+                LegPairHoldCount = i == LeftThighSensorIndex || i == LeftCalfSensorIndex
+                    ? leftLegPairHoldCount
+                    : (i == RightThighSensorIndex || i == RightCalfSensorIndex) ? rightLegPairHoldCount : 0L,
                 Q = quaternions != null && i < quaternions.Length
                     ? quaternions[i]
                     : Quaternion.identity
@@ -1181,15 +1246,20 @@ public class MotionCaptureController : MonoBehaviour
         ClearDeviceAvailability();
         bool connected = Serial.Connect(port, baud);
         bool scheduleCommandSent = false;
-        uint scheduleToken = unchecked((uint)Environment.TickCount);
+        zigbeeScheduleToken = unchecked((uint)Environment.TickCount);
         if (connected && configureZigbeeScheduleOnConnect)
         {
             int rateHz = Mathf.Clamp(zigbeeScheduledTransmitRateHz, 1, 10);
-            scheduleCommandSent = Serial.ConfigureScheduledLink(rateHz, scheduleToken);
+            scheduleCommandSent = Serial.ConfigureScheduledLink(rateHz, zigbeeScheduleToken);
+            nextZigbeeScheduleSyncTime = Time.unscaledTime + Mathf.Clamp(zigbeeScheduleRetrySeconds, 1f, 10f);
             aiDiagnosticLogger?.LogEvent(
                 scheduleCommandSent ? "zigbee_schedule_sent" : "zigbee_schedule_send_failed",
                 scheduleCommandSent ? "LINK_CONFIGURED" : "LINK_CONFIG_FAILED",
-                $"广播错峰配置：{rateHz}Hz，Token=0x{scheduleToken:X8}；节点V2标志bit4用于确认是否收到");
+                $"广播错峰配置：{rateHz}Hz，Token=0x{zigbeeScheduleToken:X8}；节点V2标志bit4用于确认，漏收或重启将自动重发");
+        }
+        else
+        {
+            nextZigbeeScheduleSyncTime = -1f;
         }
         aiDiagnosticLogger?.LogEvent(
             connected ? "connect_succeeded" : "connect_failed",
@@ -1565,6 +1635,20 @@ public class MotionCaptureController : MonoBehaviour
         calibrationLockedWaitingForRuntime = false;
         runtimeDriveSuspended = false;
         runtimeRecoveryFreshSince = -1f;
+        leftLegPairHeld = false;
+        rightLegPairHeld = false;
+        leftLegPairHoldCount = 0L;
+        rightLegPairHoldCount = 0L;
+        lastLeftLegDrivePairTimestampUtc = DateTime.MinValue;
+        lastRightLegDrivePairTimestampUtc = DateTime.MinValue;
+        lastLeftLegDrivePairSkewSeconds = double.PositiveInfinity;
+        lastRightLegDrivePairSkewSeconds = double.PositiveInfinity;
+        nextZigbeeScheduleSyncTime = -1f;
+        lastReportedSynchronizedSourceCount = -1;
+        if (observedSourceRestartCounts != null)
+            Array.Clear(observedSourceRestartCounts, 0, observedSourceRestartCounts.Length);
+        if (lastLegInputStepLogTimes != null)
+            Array.Clear(lastLegInputStepLogTimes, 0, lastLegInputStepLogTimes.Length);
         if (runtimeReadinessStartSequences != null)
         {
             for (int i = 0; i < runtimeReadinessStartSequences.Length; i++)
@@ -1641,6 +1725,76 @@ public class MotionCaptureController : MonoBehaviour
 
     public int SlottedSourceCount => CountSources(false);
     public int SynchronizedSourceCount => CountSources(true);
+
+    private void MaintainZigbeeScheduleSynchronization()
+    {
+        if (!configureZigbeeScheduleOnConnect || Serial == null || !Serial.IsConnected ||
+            Serial.Parser == null)
+            return;
+
+        SerialParser parser = Serial.Parser;
+        int deviceCount = config != null ? Mathf.Max(0, config.deviceCount) : 9;
+        int v2SourceCount = 0;
+        int synchronizedCount = 0;
+        bool sourceRestarted = false;
+        int restartedSensor = -1;
+
+        for (int i = 0; i < deviceCount; i++)
+        {
+            if (!parser.HasV2Source(i)) continue;
+            v2SourceCount++;
+            if (parser.IsSourceLinkSynchronized(i))
+                synchronizedCount++;
+
+            long restartCount = parser.GetSourceRestartCount(i);
+            if (observedSourceRestartCounts != null && i < observedSourceRestartCounts.Length)
+            {
+                if (restartCount > observedSourceRestartCounts[i])
+                {
+                    sourceRestarted = true;
+                    restartedSensor = i;
+                }
+                observedSourceRestartCounts[i] = restartCount;
+            }
+        }
+
+        if (synchronizedCount != lastReportedSynchronizedSourceCount)
+        {
+            aiDiagnosticLogger?.LogEvent(
+                "zigbee_sync_status_changed",
+                "LINK_MONITOR",
+                $"V2错峰同步状态：{synchronizedCount}/{v2SourceCount}",
+                $"slotted={SlottedSourceCount}, synchronized={synchronizedCount}, v2={v2SourceCount}");
+            lastReportedSynchronizedSourceCount = synchronizedCount;
+        }
+
+        float now = Time.unscaledTime;
+        if (sourceRestarted || nextZigbeeScheduleSyncTime < 0f)
+            nextZigbeeScheduleSyncTime = now;
+        if (now < nextZigbeeScheduleSyncTime)
+            return;
+
+        bool allKnownSourcesSynchronized = v2SourceCount >= deviceCount && synchronizedCount >= v2SourceCount;
+        string reason = sourceRestarted
+            ? $"检测到{restartedSensor + 1:00}源端重启"
+            : allKnownSourcesSynchronized
+                ? "周期维护"
+                : $"仍有节点未同步({synchronizedCount}/{Mathf.Max(v2SourceCount, deviceCount)})";
+
+        int rateHz = Mathf.Clamp(zigbeeScheduledTransmitRateHz, 1, 10);
+        zigbeeScheduleToken = unchecked(zigbeeScheduleToken + 1u);
+        bool sent = Serial.ConfigureScheduledLink(rateHz, zigbeeScheduleToken);
+        aiDiagnosticLogger?.LogEvent(
+            sent ? "zigbee_schedule_resync_sent" : "zigbee_schedule_resync_failed",
+            sent ? "LINK_RESYNC" : "LINK_RESYNC_FAILED",
+            $"{reason}，重发{rateHz}Hz错峰配置，Token=0x{zigbeeScheduleToken:X8}",
+            $"v2={v2SourceCount}, synchronized={synchronizedCount}, restart_sensor={(restartedSensor >= 0 ? (restartedSensor + 1).ToString("00") : "--")}");
+
+        float nextDelay = allKnownSourcesSynchronized
+            ? Mathf.Clamp(zigbeeScheduleMaintenanceSeconds, 10f, 60f)
+            : Mathf.Clamp(zigbeeScheduleRetrySeconds, 1f, 10f);
+        nextZigbeeScheduleSyncTime = now + nextDelay;
+    }
 
     private int CountSources(bool synchronizedOnly)
     {
@@ -2361,7 +2515,7 @@ public class MotionCaptureController : MonoBehaviour
             calibrationCountdownStatus,
             "per_bone_freshness_gate=true, global_nine_sensor_gate=false");
         WriteAiDiagnosticSnapshot("independent_runtime_started");
-        Debug.LogWarning($"[V8.19][IndependentRuntimeStarted] {calibrationCountdownStatus}");
+        Debug.LogWarning($"[V8.20][IndependentRuntimeStarted] {calibrationCountdownStatus}");
     }
 
     private void CancelCalibrationCountdown(string reason)
@@ -2586,6 +2740,25 @@ public class MotionCaptureController : MonoBehaviour
 
     private void OnFrameDequeued(int deviceId, Quaternion q, Vector3 euler)
     {
+        if (deviceId >= LeftThighSensorIndex && deviceId <= RightCalfSensorIndex && processor != null)
+        {
+            float stepDeg = processor.GetLastAcceptedStepAngleDeg(deviceId);
+            bool logWindowOpen = lastLegInputStepLogTimes == null || deviceId >= lastLegInputStepLogTimes.Length ||
+                                 Time.unscaledTime - lastLegInputStepLogTimes[deviceId] >= 0.50f;
+            if (stepDeg >= 30f && logWindowOpen)
+            {
+                if (lastLegInputStepLogTimes != null && deviceId < lastLegInputStepLogTimes.Length)
+                    lastLegInputStepLogTimes[deviceId] = Time.unscaledTime;
+                SerialParser stepParser = Serial != null ? Serial.Parser : null;
+                aiDiagnosticLogger?.LogEvent(
+                    "leg_input_large_step",
+                    State != null && State.IsDriving ? "DRIVING" : "CALIBRATION_OR_WAITING",
+                    $"{deviceId + 1:00}{GetSensorRoleLabel(deviceId)}相邻有效输入跳变{stepDeg:F1}°；骨骼输出将按最大角速度限幅",
+                    $"sensor={deviceId + 1:00}, step_deg={stepDeg:F2}, source_seq={(stepParser != null ? stepParser.GetLastSourceSequence(deviceId) : 0u)}, " +
+                    $"source_lost={(stepParser != null ? stepParser.GetSourceLostFrameCount(deviceId) : 0L)}, q=({q.x:F5},{q.y:F5},{q.z:F5},{q.w:F5})");
+            }
+        }
+
         if (State != null && State.IsDriving &&
             (deviceId == LeftThighSensorIndex || deviceId == LeftCalfSensorIndex ||
              deviceId == RightThighSensorIndex || deviceId == RightCalfSensorIndex))
@@ -2790,6 +2963,7 @@ public class MotionCaptureController : MonoBehaviour
         leftLegDriver.InputLowPassEnabled = legInputLowPassEnabled;
         leftLegDriver.SmoothingEnabled = runtimeSmoothingEnabled;
         leftLegDriver.SmoothingSpeed = Mathf.Max(0.01f, legOutputSmoothingSpeed);
+        leftLegDriver.MaximumAngularSpeedDegPerSec = Mathf.Clamp(legMaximumAngularSpeedDegPerSec, 90f, 540f);
         leftLegDriver.MinBoneAngleThresholdDeg = 0f;
     }
 
@@ -2818,6 +2992,7 @@ public class MotionCaptureController : MonoBehaviour
         rightLegDriver.InputLowPassEnabled = legInputLowPassEnabled;
         rightLegDriver.SmoothingEnabled = runtimeSmoothingEnabled;
         rightLegDriver.SmoothingSpeed = Mathf.Max(0.01f, legOutputSmoothingSpeed);
+        rightLegDriver.MaximumAngularSpeedDegPerSec = Mathf.Clamp(legMaximumAngularSpeedDegPerSec, 90f, 540f);
         rightLegDriver.MinBoneAngleThresholdDeg = 0f;
     }
 
@@ -2836,6 +3011,7 @@ public class MotionCaptureController : MonoBehaviour
         armDriver.SuppressLeftForeArmAxialTwist = suppressLeftForeArmAxialTwist;
         armDriver.SmoothingEnabled = runtimeSmoothingEnabled;
         armDriver.SmoothingSpeed = Mathf.Max(0.01f, armSmoothingSpeed);
+        armDriver.MaximumAngularSpeedDegPerSec = Mathf.Clamp(upperBodyMaximumAngularSpeedDegPerSec, 90f, 720f);
         armDriver.MinAngleThresholdDeg = Mathf.Max(0f, armMinAngleThresholdDeg);
         // V8.10主路径固定开启，避免旧场景或Inspector残值退回V8.5/V8.8错误路径。
         useRightArmCalibratedDeltaSwing = true;
@@ -3032,7 +3208,7 @@ public class MotionCaptureController : MonoBehaviour
             $"low_rate_compat={lowRateRuntimeCompatibilityEnabled}, min_receive_hz={runtimeMinimumFrameRateHz:F1}, base_age_s={runtimeDeviceTimeoutSeconds:F1}, warmup_frames={runtimeReadinessMinimumUniqueFrames}");
         WriteAiDiagnosticSnapshot(wasRuntimeRecovery ? "runtime_recovered" : "runtime_gate_passed");
         Debug.LogWarning(
-            $"[V8.19][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
+            $"[V8.20][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
             (wasRuntimeRecovery ? "沿用已锁存标定恢复驱动" : "首次进入驱动"));
         return true;
     }
@@ -3204,13 +3380,141 @@ public class MotionCaptureController : MonoBehaviour
         return age <= timeout;
     }
 
-    private void ResetBoneToRestIfUnavailable(int boneIndex, bool participates, bool inputAvailable)
+    private bool PrepareTimePairedLegDriveInput(
+        bool leftSide,
+        bool thighFresh,
+        bool calfFresh,
+        out Quaternion[] driveInput)
     {
-        if (!participates || inputAvailable || bones == null || restLocalRotations == null ||
-            boneIndex < 0 || boneIndex >= bones.Length || boneIndex >= restLocalRotations.Length ||
-            bones[boneIndex] == null)
-            return;
-        bones[boneIndex].transform.localRotation = restLocalRotations[boneIndex];
+        Quaternion[] source = processor != null ? processor.TransformedQuaternions : null;
+        driveInput = leftSide ? leftLegDriveInput : rightLegDriveInput;
+        if (source == null || driveInput == null || driveInput.Length < source.Length)
+        {
+            SetLegPairDriveHeld(leftSide, true, "驱动输入缓冲不可用", double.PositiveInfinity, double.PositiveInfinity);
+            return false;
+        }
+
+        Array.Copy(source, driveInput, source.Length);
+        bool pairRequired = leftSide ? leftCalfParticipatesInCalibration : rightCalfParticipatesInCalibration;
+        if (!pairRequired)
+            return false;
+
+        if (!thighFresh || !calfFresh)
+        {
+            SetLegPairDriveHeld(
+                leftSide,
+                true,
+                !thighFresh ? "大腿输入超时" : "小腿输入超时",
+                double.PositiveInfinity,
+                double.PositiveInfinity);
+            return false;
+        }
+
+        int thighSensorIndex = leftSide ? LeftThighSensorIndex : RightThighSensorIndex;
+        int calfSensorIndex = leftSide ? LeftCalfSensorIndex : RightCalfSensorIndex;
+        if (!processor.TryGetTimePairedAvatarRotations(
+                thighSensorIndex,
+                calfSensorIndex,
+                Mathf.Clamp(legDriveMaxPairSkewSeconds, 0.10f, 0.40f),
+                out Quaternion pairedThigh,
+                out Quaternion pairedCalf,
+                out DateTime pairTimestampUtc,
+                out double pairSkewSeconds))
+        {
+            SetLegPairDriveHeld(leftSide, true, "没有满足门限的时间配对帧", double.PositiveInfinity, double.PositiveInfinity);
+            return false;
+        }
+
+        double pairAgeSeconds = pairTimestampUtc == DateTime.MinValue
+            ? double.PositiveInfinity
+            : Math.Max(0d, (DateTime.UtcNow - pairTimestampUtc).TotalSeconds);
+        if (pairAgeSeconds > Mathf.Clamp(legDriveMaxPairAgeSeconds, 0.25f, 1f))
+        {
+            SetLegPairDriveHeld(leftSide, true, "最新配对帧已经陈旧", pairSkewSeconds, pairAgeSeconds);
+            return false;
+        }
+
+        // 大腿继续使用自己的当前最新姿态；小腿只借用“配对时刻的相对旋转”。
+        // syntheticCalf使Inverse(currentThigh)*syntheticCalf严格等于
+        // Inverse(pairedThigh)*pairedCalf，既不拖慢髋关节，也不会混用两个时刻计算膝盖。
+        Quaternion currentThigh = source[thighSensorIndex].normalized;
+        driveInput[thighSensorIndex] = currentThigh;
+        driveInput[calfSensorIndex] = ComposeTimePairedCalfForCurrentThigh(
+            currentThigh, pairedThigh, pairedCalf);
+
+        if (leftSide)
+        {
+            lastLeftLegDrivePairTimestampUtc = pairTimestampUtc;
+            lastLeftLegDrivePairSkewSeconds = pairSkewSeconds;
+        }
+        else
+        {
+            lastRightLegDrivePairTimestampUtc = pairTimestampUtc;
+            lastRightLegDrivePairSkewSeconds = pairSkewSeconds;
+        }
+        SetLegPairDriveHeld(leftSide, false, "时间配对恢复", pairSkewSeconds, pairAgeSeconds);
+        return true;
+    }
+
+    public static Quaternion ComposeTimePairedCalfForCurrentThigh(
+        Quaternion currentThigh,
+        Quaternion pairedThigh,
+        Quaternion pairedCalf)
+    {
+        currentThigh = currentThigh.normalized;
+        Quaternion pairedRelative =
+            (Quaternion.Inverse(pairedThigh.normalized) * pairedCalf.normalized).normalized;
+        return (currentThigh * pairedRelative).normalized;
+    }
+
+    private double GetLegDrivePairAgeMilliseconds(int sensorIndex)
+    {
+        DateTime pairTimestampUtc;
+        if (sensorIndex == LeftThighSensorIndex || sensorIndex == LeftCalfSensorIndex)
+            pairTimestampUtc = lastLeftLegDrivePairTimestampUtc;
+        else if (sensorIndex == RightThighSensorIndex || sensorIndex == RightCalfSensorIndex)
+            pairTimestampUtc = lastRightLegDrivePairTimestampUtc;
+        else
+            return double.PositiveInfinity;
+
+        return pairTimestampUtc == DateTime.MinValue
+            ? double.PositiveInfinity
+            : Math.Max(0d, (DateTime.UtcNow - pairTimestampUtc).TotalMilliseconds);
+    }
+
+    private void SetLegPairDriveHeld(
+        bool leftSide,
+        bool held,
+        string reason,
+        double pairSkewSeconds,
+        double pairAgeSeconds)
+    {
+        bool previous = leftSide ? leftLegPairHeld : rightLegPairHeld;
+        if (previous == held) return;
+
+        if (leftSide)
+        {
+            leftLegPairHeld = held;
+            if (held) leftLegPairHoldCount++;
+        }
+        else
+        {
+            rightLegPairHeld = held;
+            if (held) rightLegPairHoldCount++;
+        }
+
+        string side = leftSide ? "左腿06/07" : "右腿08/09";
+        string details =
+            $"side={(leftSide ? "left" : "right")}, pair_skew_ms={(double.IsInfinity(pairSkewSeconds) ? -1d : pairSkewSeconds * 1000d):F0}, " +
+            $"pair_age_ms={(double.IsInfinity(pairAgeSeconds) ? -1d : pairAgeSeconds * 1000d):F0}, " +
+            $"hold_count={(leftSide ? leftLegPairHoldCount : rightLegPairHoldCount)}";
+        aiDiagnosticLogger?.LogEvent(
+            held ? "leg_pair_drive_held" : "leg_pair_drive_resumed",
+            "DRIVING",
+            held
+                ? $"{side}配对不可用，仅保持小腿最后安全姿势：{reason}"
+                : $"{side}配对恢复，按限速继续驱动",
+            details);
     }
 
     private void UpdateIndependentRuntimeInputDiagnostics()

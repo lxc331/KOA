@@ -340,6 +340,7 @@ public sealed class RightLegPoseDriver
 
     public bool SmoothingEnabled { get; set; } = true;
     public float SmoothingSpeed { get; set; } = 10f;
+    public float MaximumAngularSpeedDegPerSec { get; set; } = 240f;
     public float DebugLogInterval { get; set; } = 0.25f;
     public bool StaticCheckLogEnabled { get; set; } = true;
     public bool KneeDebugLogEnabled { get; set; } = true;
@@ -1338,10 +1339,12 @@ public sealed class RightLegPoseDriver
         if (angleDelta < minAngleDeg)
             return currentCached;
 
-        if (!SmoothingEnabled)
-            return NormalizeSafe(target);
-
-        float t = 1f - Mathf.Exp(-Mathf.Max(0.01f, SmoothingSpeed) * Time.deltaTime);
+        float t = SmoothingEnabled
+            ? 1f - Mathf.Exp(-Mathf.Max(0.01f, SmoothingSpeed) * Time.deltaTime)
+            : 1f;
+        float maxStepDeg = Mathf.Max(0f, MaximumAngularSpeedDegPerSec) * Mathf.Max(0f, Time.deltaTime);
+        if (maxStepDeg > 0f && angleDelta > maxStepDeg)
+            t = Mathf.Min(t, maxStepDeg / angleDelta);
         return NormalizeSafe(Quaternion.Slerp(currentCached, target, t));
     }
 

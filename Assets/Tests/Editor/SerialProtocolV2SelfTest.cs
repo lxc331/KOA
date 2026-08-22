@@ -43,6 +43,7 @@ public static class SerialProtocolV2SelfTest
         ResetClearsOldFramesAndIdentityState();
         AdaptiveCalibrationTimeoutUsesEachDeviceCadence();
         PairedLegCalibrationChannelsAccumulateIndependently();
+        TimePairedLegCompositionPreservesCurrentThighAndPairedKnee();
         AiDiagnosticLogIsIncrementalAndComplete();
     }
 
@@ -304,6 +305,22 @@ public static class SerialProtocolV2SelfTest
             "清除左小腿样本时误清除了左大腿样本");
         Require(right.ThighCalibrationSampleCount == 5 && right.CalfCalibrationSampleCount == 0,
             "清除右小腿样本时误清除了右大腿样本");
+    }
+
+    private static void TimePairedLegCompositionPreservesCurrentThighAndPairedKnee()
+    {
+        Quaternion pairedThigh = Quaternion.Euler(12f, 28f, -7f);
+        Quaternion pairedCalf = Quaternion.Euler(18f, 30f, 36f);
+        Quaternion currentThigh = Quaternion.Euler(-24f, 75f, 11f);
+        Quaternion syntheticCalf = MotionCaptureController.ComposeTimePairedCalfForCurrentThigh(
+            currentThigh, pairedThigh, pairedCalf);
+
+        Quaternion expectedRelative =
+            (Quaternion.Inverse(pairedThigh) * pairedCalf).normalized;
+        Quaternion actualRelative =
+            (Quaternion.Inverse(currentThigh) * syntheticCalf).normalized;
+        Require(Quaternion.Angle(expectedRelative, actualRelative) < 0.01f,
+            "时间配对小腿合成没有保留同一时刻的膝关节相对旋转");
     }
 
     private static void Append(SerialParser parser, byte[] bytes)

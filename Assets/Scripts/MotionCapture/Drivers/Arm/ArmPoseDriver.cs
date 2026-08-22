@@ -95,6 +95,7 @@ public sealed class ArmPoseDriver
 
     public bool SmoothingEnabled { get; set; } = true;
     public float SmoothingSpeed { get; set; } = 20f;
+    public float MaximumAngularSpeedDegPerSec { get; set; } = 300f;
     public float MinAngleThresholdDeg { get; set; } = 0.2f;
 
     public Vector3 LeftArmBoneAxisOffsetEuler { get; set; } = Vector3.zero;
@@ -1414,14 +1415,15 @@ public sealed class ArmPoseDriver
         {
             applied = current;
         }
-        else if (SmoothingEnabled)
-        {
-            float t = 1f - Mathf.Exp(-Mathf.Max(0.01f, SmoothingSpeed) * Time.deltaTime);
-            applied = Quaternion.Slerp(current, targetLocal, t).normalized;
-        }
         else
         {
-            applied = targetLocal;
+            float t = SmoothingEnabled
+                ? 1f - Mathf.Exp(-Mathf.Max(0.01f, SmoothingSpeed) * Time.deltaTime)
+                : 1f;
+            float maxStepDeg = Mathf.Max(0f, MaximumAngularSpeedDegPerSec) * Mathf.Max(0f, Time.deltaTime);
+            if (maxStepDeg > 0f && angle > maxStepDeg)
+                t = Mathf.Min(t, maxStepDeg / angle);
+            applied = Quaternion.Slerp(current, targetLocal, t).normalized;
         }
 
         bone.localRotation = applied;

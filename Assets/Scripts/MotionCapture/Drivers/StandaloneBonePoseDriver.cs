@@ -12,6 +12,7 @@ public sealed class StandaloneBonePoseDriver
     public string LastError { get; private set; } = string.Empty;
     public bool SmoothingEnabled { get; set; } = true;
     public float SmoothingSpeed { get; set; } = 30f;
+    public float MaximumAngularSpeedDegPerSec { get; set; } = 300f;
 
     private Quaternion sensorReference = Quaternion.identity;
     private Quaternion sensorToBoneWorldOffset = Quaternion.identity;
@@ -105,15 +106,14 @@ public sealed class StandaloneBonePoseDriver
             hasSmoothedLocal = true;
         }
 
-        if (SmoothingEnabled)
-        {
-            float t = 1f - Mathf.Exp(-Mathf.Max(0.01f, SmoothingSpeed) * Time.deltaTime);
-            smoothedLocal = Quaternion.Slerp(smoothedLocal, targetLocal, t);
-        }
-        else
-        {
-            smoothedLocal = targetLocal;
-        }
+        float angle = Quaternion.Angle(smoothedLocal, targetLocal);
+        float t = SmoothingEnabled
+            ? 1f - Mathf.Exp(-Mathf.Max(0.01f, SmoothingSpeed) * Time.deltaTime)
+            : 1f;
+        float maxStepDeg = Mathf.Max(0f, MaximumAngularSpeedDegPerSec) * Mathf.Max(0f, Time.deltaTime);
+        if (maxStepDeg > 0f && angle > maxStepDeg)
+            t = Mathf.Min(t, maxStepDeg / angle);
+        smoothedLocal = Quaternion.Slerp(smoothedLocal, targetLocal, t);
 
         bone.localRotation = smoothedLocal;
         return true;

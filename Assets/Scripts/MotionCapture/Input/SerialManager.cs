@@ -192,7 +192,7 @@ public class SerialManager : IDisposable
         return Connect(baud);
     }
 
-    /// <summary>广播一次发送频率和统一时隙起点。九块 V8.19 固件会各自按 ID 选取时隙。</summary>
+    /// <summary>广播发送频率和统一时隙起点。V8.19及以上固件会各自按 ID 选取时隙。</summary>
     public bool ConfigureScheduledLink(int transmitRateHz, uint syncToken)
     {
         return controller != null && controller.TryWrite(
@@ -230,5 +230,4 @@ public class SerialManager : IDisposable
         Disconnect();
     }
 }
-
 

@@ -552,7 +552,7 @@ public class MotionCaptureUI : MonoBehaviour
         GUI.Label(new Rect(10f, 294f, telemetryWindowRect.width - 20f, 20f),
             $"源端：丢 {controller.SourceLostFrameCount}  重复 {controller.SourceDuplicateFrameCount}  " +
             $"乱序 {controller.SourceOutOfOrderFrameCount}  CRC错 {controller.Crc16FailCount}  " +
-            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜V8.19时隙 {controller.SlottedSourceCount}/{deviceCount}  " +
+            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜V8.20时隙 {controller.SlottedSourceCount}/{deviceCount}  " +
             $"同步 {controller.SynchronizedSourceCount}/{deviceCount}｜运行闸门={controller.RuntimeGateSummary}",
             tableCellStyle);
         GUI.Label(new Rect(10f, 314f, telemetryWindowRect.width - 20f, 20f),
@@ -644,11 +644,15 @@ public class MotionCaptureUI : MonoBehaviour
         GUI.Label(new Rect(labelX, y, 345f, rowH), "右腿几何夹角 / Right included", heading);
         GUI.Label(new Rect(valueX, y, 105f, rowH), $"{rightIncluded:F1}°", value);
 
-        string leftKneeStatus = controller.LeftKneeMeasurementFresh ? "有效" : "无效/陈旧";
-        string rightKneeStatus = controller.RightKneeMeasurementFresh ? "有效" : "无效/陈旧";
+        string leftKneeStatus = controller.LeftLegDrivePairFresh
+            ? "驱动有效"
+            : $"保持(累计{controller.LeftLegPairHoldCount})";
+        string rightKneeStatus = controller.RightLegDrivePairFresh
+            ? "驱动有效"
+            : $"保持(累计{controller.RightLegPairHoldCount})";
         GUI.Label(new Rect(18f, 370f, 462f, 48f),
             $"屈曲角：伸直≈0°；几何夹角：伸直≈180°。小腿骨骼已解锁。\n" +
-            $"06+07/08+09配对：左{leftKneeStatus}｜右{rightKneeStatus}；仅07/09时为单骨骼诊断", hint);
+            $"严格时间配对驱动：左{leftKneeStatus}｜右{rightKneeStatus}；配对失败只保持小腿，不回初始姿势", hint);
     }
 
     private Rect GetKneeBottomRightRect()

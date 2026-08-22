@@ -71,6 +71,11 @@ public sealed class AiDiagnosticLogger : IDisposable
         public int CalibrationRejected;
         public int CalibrationRestarts;
         public int RuntimeFaults;
+        public bool LegPairRequired;
+        public bool LegPairFresh;
+        public double LegPairSkewMs;
+        public double LegPairAgeMs;
+        public long LegPairHoldCount;
         public Quaternion Q;
     }
 
@@ -237,6 +242,11 @@ public sealed class AiDiagnosticLogger : IDisposable
                 AppendNumber(sb, "calibration_rejected", s.CalibrationRejected); sb.Append(',');
                 AppendNumber(sb, "calibration_restarts", s.CalibrationRestarts); sb.Append(',');
                 AppendNumber(sb, "runtime_faults", s.RuntimeFaults); sb.Append(',');
+                AppendBoolean(sb, "leg_pair_required", s.LegPairRequired); sb.Append(',');
+                AppendBoolean(sb, "leg_pair_fresh", s.LegPairFresh); sb.Append(',');
+                AppendDoubleOrNull(sb, "leg_pair_skew_ms", s.LegPairSkewMs); sb.Append(',');
+                AppendDoubleOrNull(sb, "leg_pair_age_ms", s.LegPairAgeMs); sb.Append(',');
+                AppendNumber(sb, "leg_pair_hold_count", s.LegPairHoldCount); sb.Append(',');
                 sb.Append("\"q\":[")
                     .Append(Float(s.Q.x)).Append(',')
                     .Append(Float(s.Q.y)).Append(',')
