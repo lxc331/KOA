@@ -8,20 +8,20 @@ using System.Xml;
 using UnityEngine;
 
 /// <summary>
-/// V59 中文 Excel 遥测记录器。
+/// V8.21 四传感器下肢中文 Excel 遥测记录器。
 ///
 /// 记录流程：
 /// 1. 人物开始驱动时自动开始记录，仅把数据写入内存，不在运行过程中进行磁盘 I/O；
-/// 2. 传感器 1～传感器 9 分别缓存到独立列表；
+/// 2. 仅缓存传感器 06～09；
 /// 3. 点击“停止记录”、断开连接或退出程序时，一次性生成一个 .xlsx；
-/// 4. 工作簿包含 9 个中文工作表：传感器1-左上臂 ～ 传感器9-右小腿；
-/// 5. 左右前臂表增加肘关节屈曲角；左右小腿表增加膝屈曲角和大小腿几何夹角。
+/// 4. 工作簿包含4个中文工作表：左大腿、左小腿、右大腿、右小腿；
+/// 5. 左右小腿表增加膝屈曲角和大小腿几何夹角。
 ///
 /// 采用标准 Open XML 写入，不依赖 Office，也不需要 Unity 额外安装 DLL。
 /// </summary>
 public class TelemetryLogger : IDisposable
 {
-    private const int DeviceCount = 9;
+    private const int ProtocolSlotCount = 9;
     private const string ContentTypesNs = "http://schemas.openxmlformats.org/package/2006/content-types";
     private const string PackageRelationshipsNs = "http://schemas.openxmlformats.org/package/2006/relationships";
     private const string SpreadsheetNs = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -32,15 +32,17 @@ public class TelemetryLogger : IDisposable
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly string[] ChineseSheetNames =
     {
-        "传感器1-左上臂",
-        "传感器2-左前臂",
-        "传感器3-右上臂",
-        "传感器4-右前臂",
-        "传感器5-躯干",
         "传感器6-左大腿",
         "传感器7-左小腿",
         "传感器8-右大腿",
         "传感器9-右小腿"
+    };
+    private static readonly int[] ExportDeviceIndices =
+    {
+        (int)BoneIndex.LeftUpLeg,
+        (int)BoneIndex.LeftLeg,
+        (int)BoneIndex.RightUpLeg,
+        (int)BoneIndex.RightLeg
     };
 
     private sealed class TelemetryRow
@@ -66,7 +68,6 @@ public class TelemetryLogger : IDisposable
         public float Yaw;
         public float Pitch;
         public float Roll;
-        public float ElbowFlexionDeg;
         public float KneeFlexionDeg;
         public float KneeIncludedDeg;
     }
@@ -78,8 +79,8 @@ public class TelemetryLogger : IDisposable
     public bool SaveEnabled { get; set; } = true;
 
     private string exportDirectory;
-    private readonly List<TelemetryRow>[] sensorRows = new List<TelemetryRow>[DeviceCount];
-    private readonly long[] frameCounters = new long[DeviceCount];
+    private readonly List<TelemetryRow>[] sensorRows = new List<TelemetryRow>[ProtocolSlotCount];
+    private readonly long[] frameCounters = new long[ProtocolSlotCount];
     private bool warnedRowLimit;
 
     public TelemetryLogger(string exportDirectory)
@@ -88,7 +89,7 @@ public class TelemetryLogger : IDisposable
             ? Directory.GetCurrentDirectory()
             : exportDirectory;
 
-        for (int i = 0; i < DeviceCount; i++)
+        for (int i = 0; i < ProtocolSlotCount; i++)
             sensorRows[i] = new List<TelemetryRow>(4096);
     }
 
@@ -162,15 +163,15 @@ public class TelemetryLogger : IDisposable
         float receiveFrameRateHz,
         float sourceReportedFrameRateHz,
         float sourceDeliveryPercent,
-        float leftElbowFlexionDeg,
-        float rightElbowFlexionDeg,
         float leftKneeFlexionDeg,
         float leftKneeIncludedDeg,
         float rightKneeFlexionDeg,
         float rightKneeIncludedDeg)
     {
         if (!IsLogging || !SaveEnabled) return;
-        if (deviceId < 0 || deviceId >= DeviceCount) return;
+        if (deviceId < MotionCaptureController.FirstRetainedSensorIndex ||
+            deviceId >= MotionCaptureController.FirstRetainedSensorIndex + MotionCaptureController.RetainedSensorCount)
+            return;
 
         List<TelemetryRow> rows = sensorRows[deviceId];
         if (rows.Count >= ExcelMaxDataRows)
@@ -182,12 +183,6 @@ public class TelemetryLogger : IDisposable
             }
             return;
         }
-
-        float elbow = float.NaN;
-        if (deviceId == (int)BoneIndex.LeftForeArm)
-            elbow = leftElbowFlexionDeg;
-        else if (deviceId == (int)BoneIndex.RightForeArm)
-            elbow = rightElbowFlexionDeg;
 
         float kneeFlexion = float.NaN;
         float kneeIncluded = float.NaN;
@@ -227,7 +222,6 @@ public class TelemetryLogger : IDisposable
             Yaw = NormalizeSignedAngle(euler.z),
             Pitch = NormalizeSignedAngle(euler.y),
             Roll = NormalizeSignedAngle(euler.x),
-            ElbowFlexionDeg = elbow,
             KneeFlexionDeg = kneeFlexion,
             KneeIncludedDeg = kneeIncluded
         });
@@ -284,7 +278,7 @@ public class TelemetryLogger : IDisposable
 
     private void ClearBuffers()
     {
-        for (int i = 0; i < DeviceCount; i++)
+        for (int i = 0; i < ProtocolSlotCount; i++)
         {
             sensorRows[i].Clear();
             frameCounters[i] = 0;
@@ -315,8 +309,11 @@ public class TelemetryLogger : IDisposable
             WriteWorkbookRelationships(archive);
             WriteStyles(archive);
 
-            for (int i = 0; i < DeviceCount; i++)
-                WriteWorksheet(archive, i, sensorRows[i]);
+            for (int sheetIndex = 0; sheetIndex < ExportDeviceIndices.Length; sheetIndex++)
+            {
+                int deviceId = ExportDeviceIndices[sheetIndex];
+                WriteWorksheet(archive, sheetIndex, deviceId, sensorRows[deviceId]);
+            }
         }
 
         if (File.Exists(targetPath)) File.Delete(targetPath);
@@ -352,7 +349,7 @@ public class TelemetryLogger : IDisposable
             WriteTypeOverride(xw, "/xl/styles.xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml");
             WriteTypeOverride(xw, "/docProps/core.xml", "application/vnd.openxmlformats-package.core-properties+xml");
             WriteTypeOverride(xw, "/docProps/app.xml", "application/vnd.openxmlformats-officedocument.extended-properties+xml");
-            for (int i = 1; i <= DeviceCount; i++)
+            for (int i = 1; i <= ExportDeviceIndices.Length; i++)
                 WriteTypeOverride(xw, "/xl/worksheets/sheet" + i + ".xml", "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml");
             xw.WriteEndElement();
             xw.WriteEndDocument();
@@ -440,15 +437,15 @@ public class TelemetryLogger : IDisposable
             xw.WriteElementString("vt", "lpstr", VTypesNs, "工作表");
             xw.WriteEndElement();
             xw.WriteStartElement("vt", "variant", VTypesNs);
-            xw.WriteElementString("vt", "i4", VTypesNs, DeviceCount.ToString(Invariant));
+            xw.WriteElementString("vt", "i4", VTypesNs, ExportDeviceIndices.Length.ToString(Invariant));
             xw.WriteEndElement();
             xw.WriteEndElement();
             xw.WriteEndElement();
             xw.WriteStartElement("TitlesOfParts", ExtendedPropertiesNs);
             xw.WriteStartElement("vt", "vector", VTypesNs);
-            xw.WriteAttributeString("size", DeviceCount.ToString(Invariant));
+            xw.WriteAttributeString("size", ExportDeviceIndices.Length.ToString(Invariant));
             xw.WriteAttributeString("baseType", "lpstr");
-            for (int i = 0; i < DeviceCount; i++)
+            for (int i = 0; i < ExportDeviceIndices.Length; i++)
                 xw.WriteElementString("vt", "lpstr", VTypesNs, ChineseSheetNames[i]);
             xw.WriteEndElement();
             xw.WriteEndElement();
@@ -479,7 +476,7 @@ public class TelemetryLogger : IDisposable
             xw.WriteEndElement();
             xw.WriteEndElement();
             xw.WriteStartElement("sheets", SpreadsheetNs);
-            for (int i = 0; i < DeviceCount; i++)
+            for (int i = 0; i < ExportDeviceIndices.Length; i++)
             {
                 xw.WriteStartElement("sheet", SpreadsheetNs);
                 xw.WriteAttributeString("name", ChineseSheetNames[i]);
@@ -503,13 +500,13 @@ public class TelemetryLogger : IDisposable
         {
             xw.WriteStartDocument(true);
             xw.WriteStartElement("Relationships", PackageRelationshipsNs);
-            for (int i = 0; i < DeviceCount; i++)
+            for (int i = 0; i < ExportDeviceIndices.Length; i++)
             {
                 WriteRelationship(xw, "rId" + (i + 1),
                     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
                     "worksheets/sheet" + (i + 1) + ".xml");
             }
-            WriteRelationship(xw, "rId" + (DeviceCount + 1),
+            WriteRelationship(xw, "rId" + (ExportDeviceIndices.Length + 1),
                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
                 "styles.xml");
             xw.WriteEndElement();
@@ -548,13 +545,17 @@ public class TelemetryLogger : IDisposable
             writer.Write(xml);
     }
 
-    private static void WriteWorksheet(ZipArchive archive, int deviceId, List<TelemetryRow> rows)
+    private static void WriteWorksheet(
+        ZipArchive archive,
+        int sheetIndex,
+        int deviceId,
+        List<TelemetryRow> rows)
     {
         string[] headers = GetHeaders(deviceId);
         int lastColumn = headers.Length;
         string lastCell = ColumnName(lastColumn) + Math.Max(1, rows.Count + 1).ToString(Invariant);
 
-        using (Stream stream = CreateEntry(archive, "xl/worksheets/sheet" + (deviceId + 1) + ".xml"))
+        using (Stream stream = CreateEntry(archive, "xl/worksheets/sheet" + (sheetIndex + 1) + ".xml"))
         using (XmlWriter xw = CreateXmlWriter(stream))
         {
             xw.WriteStartDocument(true);
@@ -617,9 +618,6 @@ public class TelemetryLogger : IDisposable
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.Pitch, 2);
                 WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.Roll, 2);
 
-                if (deviceId == (int)BoneIndex.LeftForeArm || deviceId == (int)BoneIndex.RightForeArm)
-                    WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.ElbowFlexionDeg, 2);
-
                 if (deviceId == (int)BoneIndex.LeftLeg || deviceId == (int)BoneIndex.RightLeg)
                 {
                     WriteNumberCell(xw, ColumnName(col++) + rowNumber, row.KneeFlexionDeg, 2);
@@ -664,11 +662,6 @@ public class TelemetryLogger : IDisposable
             "俯仰角(°)",
             "横滚角(°)"
         };
-
-        if (deviceId == (int)BoneIndex.LeftForeArm)
-            headers.Add("左肘屈曲角(°)");
-        else if (deviceId == (int)BoneIndex.RightForeArm)
-            headers.Add("右肘屈曲角(°)");
 
         if (deviceId == (int)BoneIndex.LeftLeg)
         {

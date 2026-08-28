@@ -1,11 +1,12 @@
 using System;
 using System.IO;
+using System.IO.Compression;
 using UnityEditor;
 using UnityEngine;
 
 /// <summary>
 /// 串口协议回归测试。既可从 Unity 菜单执行，也可用 -executeMethod 在命令行执行。
-/// 不依赖真实串口，专门验证粘包/拆包后的协议边界、校验与九设备身份约束。
+/// 不依赖真实串口，验证协议边界、校验、身份约束以及V8.21下肢四传感器选择。
 /// </summary>
 public static class SerialProtocolV2SelfTest
 {
@@ -44,7 +45,86 @@ public static class SerialProtocolV2SelfTest
         AdaptiveCalibrationTimeoutUsesEachDeviceCadence();
         PairedLegCalibrationChannelsAccumulateIndependently();
         TimePairedLegCompositionPreservesCurrentThighAndPairedKnee();
+        LowerBodyBuildRetainsOnlyIds06To09();
+        TelemetryWorkbookContainsOnlyLowerBodySheets();
         AiDiagnosticLogIsIncrementalAndComplete();
+    }
+
+    private static void LowerBodyBuildRetainsOnlyIds06To09()
+    {
+        Require(MotionCaptureController.FirstRetainedSensorIndex == 5,
+            "下肢模式首个协议索引不是逻辑ID 06");
+        Require(MotionCaptureController.RetainedSensorCount == 4,
+            "下肢模式保留的传感器数量不是4");
+
+        for (int sensorIndex = 0; sensorIndex < 9; sensorIndex++)
+        {
+            bool expected = sensorIndex >= 5 && sensorIndex <= 8;
+            Require(MotionCaptureController.IsRetainedSensorIndex(sensorIndex) == expected,
+                $"逻辑ID {sensorIndex + 1:00} 的下肢保留判定错误");
+        }
+    }
+
+    private static void TelemetryWorkbookContainsOnlyLowerBodySheets()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "koa-lower-body-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var logger = new TelemetryLogger(directory);
+        string workbookPath = string.Empty;
+        try
+        {
+            Require(logger.Open(), "四传感器Excel记录器无法启动");
+            workbookPath = logger.CurrentLogPath;
+            for (int sensorIndex = 5; sensorIndex <= 8; sensorIndex++)
+            {
+                logger.LogFrame(
+                    sensorIndex,
+                    Quaternion.identity,
+                    Vector3.zero,
+                    2,
+                    (uint)(sensorIndex + 1),
+                    1u,
+                    100u,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    8f,
+                    8f,
+                    100f,
+                    0f,
+                    180f,
+                    0f,
+                    180f);
+            }
+            logger.Close();
+            Require(File.Exists(workbookPath), "四传感器Excel没有生成");
+
+            using (var stream = new FileStream(workbookPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var archive = new ZipArchive(stream, ZipArchiveMode.Read))
+            {
+                Require(archive.GetEntry("xl/worksheets/sheet4.xml") != null,
+                    "四传感器Excel缺少第4个工作表");
+                Require(archive.GetEntry("xl/worksheets/sheet5.xml") == null,
+                    "四传感器Excel仍生成了第5个或更多工作表");
+                ZipArchiveEntry workbook = archive.GetEntry("xl/workbook.xml");
+                Require(workbook != null, "四传感器Excel缺少workbook.xml");
+                using (var reader = new StreamReader(workbook.Open()))
+                {
+                    string xml = reader.ReadToEnd();
+                    Require(xml.Contains("传感器6-左大腿") && xml.Contains("传感器9-右小腿"),
+                        "四传感器Excel的工作表名称不完整");
+                    Require(!xml.Contains("传感器1-左上臂") && !xml.Contains("传感器5-躯干"),
+                        "四传感器Excel仍包含上半身工作表");
+                }
+            }
+        }
+        finally
+        {
+            logger.Dispose();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
     }
 
     private static void AiDiagnosticLogIsIncrementalAndComplete()
@@ -60,7 +140,7 @@ public static class SerialProtocolV2SelfTest
                 Application.unityVersion,
                 "COM-TEST",
                 115200,
-                9), "AI诊断日志无法创建：" + logger.LastError);
+                4), "AI诊断日志无法创建：" + logger.LastError);
             path = logger.CurrentPath;
             logger.LogEvent("self_test", "WAITING_DATA", "incremental write");
             logger.LogSnapshot(
@@ -68,7 +148,7 @@ public static class SerialProtocolV2SelfTest
                 "self test",
                 string.Empty,
                 new AiDiagnosticLogger.ParserSnapshot { Port = "COM-TEST", Baud = 115200 },
-                new[] { new AiDiagnosticLogger.SensorSnapshot { Id = 1, Role = "测试", Q = Quaternion.identity } });
+                new[] { new AiDiagnosticLogger.SensorSnapshot { Id = 6, Role = "左大腿", Q = Quaternion.identity } });
 
             // AutoFlush=true：Close之前也必须已经能从另一个读句柄看到增量内容。
             string liveText = ReadAllTextShared(path);

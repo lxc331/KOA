@@ -11,7 +11,7 @@ using UnityEngine;
 /// 
 /// 界面组成：
 ///   1. Control Interface 窗口 — 端口选择、连接/断开、参数调整、导出设置
-///   2. Sensor Telemetry 窗口 — 9 个传感器的实时数据及在线/稳定/标定状态
+///   2. Sensor Telemetry 窗口 — 06～09 四个下肢传感器的实时数据及在线/稳定/标定状态
 ///   3. 中心状态按钮 — 自动标定倒计时与采样状态；按钮仅作为手动重试入口
 /// 
 /// 挂载方式：
@@ -62,10 +62,10 @@ public class MotionCaptureUI : MonoBehaviour
     /// <summary>用户点击“开始记录”，数据先缓存到内存。</summary>
     public event Action OnStartRecordingRequested;
 
-    /// <summary>用户点击“停止记录”，一次性生成 9-Sheet Excel。</summary>
+    /// <summary>用户点击“停止记录”，一次性生成 4-Sheet 下肢 Excel。</summary>
     public event Action OnStopRecordingRequested;
 
-    /// <summary>用户在问题发生时手动写入带九路快照的诊断标记。</summary>
+    /// <summary>用户在问题发生时手动写入带06～09快照的诊断标记。</summary>
     public event Action OnDiagnosticMarkerRequested;
 
     /// <summary>用户在端口下拉列表中选中某一项，参数：索引</summary>
@@ -117,7 +117,7 @@ public class MotionCaptureUI : MonoBehaviour
     // ── 窗口布局 ──
     private Rect controlWindowRect = new Rect(20f, 20f, 320f, 660f);   // 控制面板位置
     private Rect telemetryWindowRect;        // 遥测窗口位置（在 Start 中初始化）
-    private Rect kneeWindowRect = new Rect(0f, 0f, 500f, 430f);
+    private Rect kneeWindowRect = new Rect(0f, 0f, 500f, 320f);
     private bool telemetryRectInitialized;   // 遥测窗口是否已初始化过位置
 
     [Header("Sensor Telemetry 固定位置")]
@@ -131,11 +131,11 @@ public class MotionCaptureUI : MonoBehaviour
 
     // 窗口最小尺寸限制
     private const float MIN_CTRL_W = 320f, MIN_CTRL_H = 660f;
-    private const float MIN_TELE_W = 1120f, MIN_TELE_H = 340f;
-    private const float TELE_DEFAULT_W = 1120f, TELE_DEFAULT_H = 340f;
+    private const float MIN_TELE_W = 1120f, MIN_TELE_H = 220f;
+    private const float TELE_DEFAULT_W = 1120f, TELE_DEFAULT_H = 220f;
     private const float TELE_MARGIN = 20f;     // 遥测窗口距屏幕边缘的边距
     private const float KNEE_WINDOW_W = 500f;
-    private const float KNEE_WINDOW_H = 430f;
+    private const float KNEE_WINDOW_H = 320f;
     private const float KNEE_MARGIN = 24f;
     private const float RESIZE_HANDLE = 14f;   // 缩放手柄大小（像素）
 
@@ -256,10 +256,10 @@ public class MotionCaptureUI : MonoBehaviour
         telemetryWindowRect = GUI.Window(TELE_WINDOW_ID, telemetryWindowRect,
             DrawTelemetryWindow, "Sensor Telemetry");
 
-        // V59 肘膝角面板固定在画面右下角，并同时显示两种角度定义。
+        // 下肢模式的膝角面板固定在画面右下角，并同时显示两种角度定义。
         kneeWindowRect = GetKneeBottomRightRect();
         kneeWindowRect = GUI.Window(KNEE_WINDOW_ID, kneeWindowRect,
-            DrawKneeAngleWindow, "Joint Angles / 肘膝关节角度");
+            DrawKneeAngleWindow, "Knee Angles / 膝关节角度");
 
         // 绘制屏幕中心的开始按钮
         DrawCenterStartButton();
@@ -458,7 +458,7 @@ public class MotionCaptureUI : MonoBehaviour
     // ═══════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// 绘制遥测数据窗口：9 行实时数据，并逐路显示在线、稳定和标定结果。
+    /// 绘制遥测数据窗口：只显示06～09四行实时数据，并逐路显示在线、稳定和标定结果。
     /// </summary>
     private void DrawTelemetryWindow(int id)
     {
@@ -467,7 +467,7 @@ public class MotionCaptureUI : MonoBehaviour
         // 确保表格样式已初始化
         EnsureTableStyles();
 
-        int deviceCount = controller.Config.deviceCount;
+        int deviceCount = MotionCaptureController.RetainedSensorCount;
 
         // V1表头：恢复完整四元数、欧拉角和逐路状态。
         string[] headers = { "传感器/部位", "q0", "q1", "q2", "q3", "yaw", "pitch", "roll", "通信", "运行", "稳定", "标定结果", "接收Hz", "源Hz", "帧龄ms", "到达%", "源丢", "重复", "乱序", "故障" };
@@ -485,9 +485,10 @@ public class MotionCaptureUI : MonoBehaviour
 
         // ── 绘制数据行（每个传感器一行） ──
         var quats = controller.TransformedQuaternions;
-        for (int i = 0; i < deviceCount; i++)
+        for (int displayRow = 0; displayRow < deviceCount; displayRow++)
         {
-            float y = startY + rowH * i;
+            int i = MotionCaptureController.FirstRetainedSensorIndex + displayRow;
+            float y = startY + rowH * displayRow;
             x = startX;
 
             // 获取该设备经坐标转换后的四元数
@@ -543,19 +544,20 @@ public class MotionCaptureUI : MonoBehaviour
                 controller.LastRuntimeFaultSensorIndex == i ? statusFailedStyle : tableCellStyle);
         }
 
-        // 保持V1表格尺寸，只增加一行紧凑链路摘要。标定结果是历史锁存，通信是当前状态。
-        GUI.Label(new Rect(10f, 274f, telemetryWindowRect.width - 20f, 20f),
+        // 摘要紧跟四路数据行。标定结果是历史锁存，通信是当前状态。
+        float footerY = startY + rowH * deviceCount + 4f;
+        GUI.Label(new Rect(10f, footerY, telemetryWindowRect.width - 20f, 20f),
             $"测试={controller.SensorTestSelectionSummary}｜通信=当前帧状态｜标定=历史结果｜" +
             $"队列 {controller.GlobalQueueCount}/{controller.GlobalQueueCapacity}  队满丢弃 {controller.GlobalQueueDroppedFrameCount}  " +
             $"恢复合并 {controller.BacklogDiscardedFrameCount}",
             tableCellStyle);
-        GUI.Label(new Rect(10f, 294f, telemetryWindowRect.width - 20f, 20f),
+        GUI.Label(new Rect(10f, footerY + 20f, telemetryWindowRect.width - 20f, 20f),
             $"源端：丢 {controller.SourceLostFrameCount}  重复 {controller.SourceDuplicateFrameCount}  " +
             $"乱序 {controller.SourceOutOfOrderFrameCount}  CRC错 {controller.Crc16FailCount}  " +
-            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜V8.20时隙 {controller.SlottedSourceCount}/{deviceCount}  " +
+            $"ID冲突 {controller.DuplicateLogicalIdConflictCount}｜V8.21时隙 {controller.SlottedSourceCount}/{deviceCount}  " +
             $"同步 {controller.SynchronizedSourceCount}/{deviceCount}｜运行闸门={controller.RuntimeGateSummary}",
             tableCellStyle);
-        GUI.Label(new Rect(10f, 314f, telemetryWindowRect.width - 20f, 20f),
+        GUI.Label(new Rect(10f, footerY + 40f, telemetryWindowRect.width - 20f, 20f),
             string.IsNullOrEmpty(controller.LastRuntimeFaultSummary)
                 ? "上次运行故障：无"
                 : $"上次运行故障：{controller.LastRuntimeFaultSummary}",
@@ -570,7 +572,7 @@ public class MotionCaptureUI : MonoBehaviour
     }
 
     /// <summary>
-    /// V8 肘膝关节角度面板。06+07、08+09同时在线时显示时间配对膝角，并同步驱动小腿。
+    /// 下肢膝关节角度面板。06+07、08+09同时在线时显示时间配对膝角，并同步驱动小腿。
     /// </summary>
     private void DrawKneeAngleWindow(int id)
     {
@@ -609,8 +611,6 @@ public class MotionCaptureUI : MonoBehaviour
             return;
         }
 
-        float leftElbow = Mathf.Clamp(controller.LeftElbowFlexionAngleDeg, 0f, 180f);
-        float rightElbow = Mathf.Clamp(controller.RightElbowFlexionAngleDeg, 0f, 180f);
         float leftFlex = Mathf.Clamp(controller.LeftKneeFlexionAngleDeg, 0f, 180f);
         float rightFlex = Mathf.Clamp(controller.RightKneeFlexionAngleDeg, 0f, 180f);
         float leftIncluded = Mathf.Clamp(controller.LeftKneeIncludedAngleDeg, 0f, 180f);
@@ -621,15 +621,6 @@ public class MotionCaptureUI : MonoBehaviour
         float rowH = 36f;
         float y = 30f;
 
-        GUI.Label(new Rect(labelX, y, 250f, 28f), "肘关节 / Elbow", section);
-        y += 28f;
-        GUI.Label(new Rect(labelX, y, 345f, rowH), "左肘屈曲角 / Left flexion", heading);
-        GUI.Label(new Rect(valueX, y, 105f, rowH), $"{leftElbow:F1}°", value);
-        y += rowH;
-        GUI.Label(new Rect(labelX, y, 345f, rowH), "右肘屈曲角 / Right flexion", heading);
-        GUI.Label(new Rect(valueX, y, 105f, rowH), $"{rightElbow:F1}°", value);
-
-        y += rowH + 8f;
         GUI.Label(new Rect(labelX, y, 250f, 28f), "膝关节 / Knee", section);
         y += 28f;
         GUI.Label(new Rect(labelX, y, 345f, rowH), "左膝屈曲角 / Left flexion", heading);
@@ -643,6 +634,7 @@ public class MotionCaptureUI : MonoBehaviour
         y += rowH;
         GUI.Label(new Rect(labelX, y, 345f, rowH), "右腿几何夹角 / Right included", heading);
         GUI.Label(new Rect(valueX, y, 105f, rowH), $"{rightIncluded:F1}°", value);
+        y += rowH + 12f;
 
         string leftKneeStatus = controller.LeftLegDrivePairFresh
             ? "驱动有效"
@@ -650,7 +642,7 @@ public class MotionCaptureUI : MonoBehaviour
         string rightKneeStatus = controller.RightLegDrivePairFresh
             ? "驱动有效"
             : $"保持(累计{controller.RightLegPairHoldCount})";
-        GUI.Label(new Rect(18f, 370f, 462f, 48f),
+        GUI.Label(new Rect(18f, y, 462f, 66f),
             $"屈曲角：伸直≈0°；几何夹角：伸直≈180°。小腿骨骼已解锁。\n" +
             $"严格时间配对驱动：左{leftKneeStatus}｜右{rightKneeStatus}；配对失败只保持小腿，不回初始姿势", hint);
     }
@@ -681,7 +673,7 @@ public class MotionCaptureUI : MonoBehaviour
 
         var state = controller.State;
 
-        // V8.11无动作学习与顶部提示；九传感器全身标定完成后进入驱动。
+        // 下肢四传感器标定完成并通过运行闸门后进入驱动。
         if (state.IsDriving) return;
 
         bool countdownActive = controller.IsCalibrationCountdownActive;

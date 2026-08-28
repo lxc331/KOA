@@ -3,17 +3,24 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// V8.20 九传感器时间配对驱动、断流保持与错峰自恢复版。
-/// - 强制选择01~09，所有传感器均参与稳定检查、标定和骨骼驱动；
-/// - 01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂，05驱动躯干；
+/// V8.21 四传感器下肢实时驱动版。
+/// - 仅选择06左大腿、07左小腿、08右大腿、09右小腿参与稳定检查、标定和驱动；
 /// - 06+07、08+09分别驱动左右大小腿及膝关节；
-/// - 保留V8.10右大臂连续局部Delta三轴矩阵，不启用动作识别、姿态吸附或四动作教学；
-/// - 本版用于向技术人员完整暴露当前全身链路问题，不再默认隔离03。
+/// - 01~05不参与本轮运动，手臂和脊柱每帧保持角色初始局部旋转；
+/// - 协议内部继续保留9个槽位，兼容既有ID到骨骼索引映射。
 /// </summary>
 public class MotionCaptureController : MonoBehaviour
 {
-    public const string BuildVersion = "V8.20-PAIR-HOLD-RESYNC-20260822";
+    public const string BuildVersion = "V8.21-LOWER-BODY-4SENSOR-20260827";
     private const int CalibrationSamplesPerRequiredSensor = 5;
+    public const int FirstRetainedSensorIndex = 5;
+    public const int RetainedSensorCount = 4;
+
+    public static bool IsRetainedSensorIndex(int sensorIndex)
+    {
+        return sensorIndex >= FirstRetainedSensorIndex &&
+               sensorIndex < FirstRetainedSensorIndex + RetainedSensorCount;
+    }
 
     public enum SensorCalibrationUiState
     {
@@ -77,20 +84,18 @@ public class MotionCaptureController : MonoBehaviour
     [Header("V8.20 Zigbee错峰传输与自动恢复")]
     [Tooltip("连接后广播同步命令，并在节点漏同步或重启后自动重发。旧固件会忽略该命令。")]
     [SerializeField] private bool configureZigbeeScheduleOnConnect = true;
-    [Tooltip("第一阶段固定使用每路8Hz，九路合计约72包/秒，为无线维护和重发留余量。")]
+    [Tooltip("四个下肢节点固定使用每路8Hz，合计约32包/秒，为无线维护和重发留余量。")]
     [SerializeField, Range(1, 10)] private int zigbeeScheduledTransmitRateHz = 8;
     [Tooltip("仍有V2节点未同步时的重发间隔。重复同步帧很短，不会占用姿态主链路。")]
     [SerializeField, Range(1f, 10f)] private float zigbeeScheduleRetrySeconds = 3f;
     [Tooltip("全部节点同步后仍定期维护一次，用于自动恢复测试中途重启的节点。")]
     [SerializeField, Range(10f, 60f)] private float zigbeeScheduleMaintenanceSeconds = 30f;
 
-    [Header("V8.11 九传感器全身诊断")]
-    [Tooltip("开启后强制01~09全部参与标定和驱动，覆盖旧场景中只测试03的序列化设置。")]
-    [SerializeField] private bool fullBodyDiagnosticMode = true;
-    [Tooltip("手动列表：只允许下方列出的ID参与标定与骨骼驱动；自动全部在线：接管当前在线设备。全身诊断模式会强制使用手动01~09。")]
+    [Header("V8.21 四传感器下肢模式")]
+    [Tooltip("只允许下方列出的ID参与标定与骨骼驱动。本版本会在运行时强制恢复为06~09。")]
     [SerializeField] private SensorTestSelectionMode sensorTestSelectionMode = SensorTestSelectionMode.ManualIdList;
-    [Tooltip("全身诊断默认选择01~09。仅接受01~09，使用逗号、空格或分号分隔。")]
-    [SerializeField] private string manualTestSensorIds = "01,02,03,04,05,06,07,08,09";
+    [Tooltip("下肢模式固定选择06~09。仅接受01~09，使用逗号、空格或分号分隔。")]
+    [SerializeField] private string manualTestSensorIds = "06,07,08,09";
     [Tooltip("旧版自动选择开关，仅在模式为AutoAllOnline时使用。")]
     [SerializeField] private bool autoSelectAvailableSensors = true;
     [Tooltip("同侧大腿未连接而小腿单独在线时，允许小腿进入独立骨骼诊断驱动。大小腿同时在线时仍优先使用相对膝关节驱动。")]
@@ -107,11 +112,11 @@ public class MotionCaptureController : MonoBehaviour
     [SerializeField, Range(0.2f, 2f)] private float centralizedDeviceTimeoutSeconds = 0.500f;
     [Tooltip("人物驱动阶段的严格新鲜度门限。超过该时间立即暂停骨骼驱动，但保留已完成标定等待链路恢复。")]
     [SerializeField, Range(0.5f, 2f)] private float runtimeDeviceTimeoutSeconds = 1.000f;
-    [Tooltip("九路进入人物驱动前的最低实际接收频率。目标固件为10Hz；低于此值只保留标定和诊断，不消费姿态。")]
+    [Tooltip("四路进入人物驱动前的最低实际接收频率。目标固件为8Hz；低于此值只保留标定和诊断，不消费姿态。")]
     [SerializeField, Range(2f, 9f)] private float runtimeMinimumFrameRateHz = 5.0f;
     [Tooltip("标定锁定或运行暂停后，每路至少再收到多少个唯一新帧才允许进入/恢复驱动。")]
     [SerializeField, Range(2, 8)] private int runtimeReadinessMinimumUniqueFrames = 3;
-    [Tooltip("九路同时满足帧龄、频率和新帧数后，还需连续保持多久才进入人物驱动。")]
+    [Tooltip("06~09同时满足帧龄、频率和新帧数后，还需连续保持多久才进入人物驱动。")]
     [SerializeField, Range(0.5f, 2f)] private float runtimeReadinessHoldSeconds = 1.0f;
 
     [Header("V8.16 低频运行兼容")]
@@ -275,11 +280,7 @@ public class MotionCaptureController : MonoBehaviour
     public string CurrentTestLogRelativeDirectory { get; private set; } = string.Empty;
     public SensorTestSelectionMode CurrentSensorTestSelectionMode => sensorTestSelectionMode;
     public string ManualTestSensorIds => manualTestSensorIds ?? string.Empty;
-    public string SensorTestSelectionSummary => fullBodyDiagnosticMode
-        ? "全身诊断[01-09]"
-        : sensorTestSelectionMode == SensorTestSelectionMode.ManualIdList
-            ? $"手动[{GetNormalizedManualSensorIdList()}]"
-            : "自动全部在线";
+    public string SensorTestSelectionSummary => "下肢四传感器[06-09]";
     public bool IsCalibrationCountdownActive => calibrationCountdownActive;
     public bool IsCalibrationSampling => calibrationCountdownActive && calibrationSamplingActive;
     public float CalibrationCountdownRemaining
@@ -450,7 +451,7 @@ public class MotionCaptureController : MonoBehaviour
     public string GetExportDirectory() => logger?.GetExportDirectory() ?? "";
     private void Reset()
     {
-        ApplyFullBodyDiagnosticPreset();
+        ApplyLowerBodyOnlyPreset();
         ApplyContinuousArmPreset();
         ApplyV58LegPreset();
     }
@@ -458,42 +459,39 @@ public class MotionCaptureController : MonoBehaviour
 #if UNITY_EDITOR
     private void OnValidate()
     {
-        ApplyFullBodyDiagnosticPreset();
+        ApplyLowerBodyOnlyPreset();
         ApplyContinuousArmPreset();
         ApplyV58LegPreset();
     }
 #endif
 
     /// <summary>
-    /// V8.11全身诊断预设。该预设在Awake/Start/标定入口重复应用，
-    /// 用于覆盖旧场景中遗留的“只允许03”“锁定小臂”或关闭腿部等序列化值。
+    /// V8.21下肢四传感器预设。该预设在Awake/Start/标定入口重复应用，
+    /// 用于覆盖旧场景中遗留的全身诊断、手臂驱动或关闭腿部等序列化值。
     /// </summary>
-    private void ApplyFullBodyDiagnosticPreset()
+    private void ApplyLowerBodyOnlyPreset()
     {
-        // V8.11是专用全身诊断包，运行时不允许旧场景或Inspector关闭该模式。
-        fullBodyDiagnosticMode = true;
-
+        // 本版本固定只接管06~09，避免旧场景的序列化字段重新打开01~05。
         sensorTestSelectionMode = SensorTestSelectionMode.ManualIdList;
-        manualTestSensorIds = "01,02,03,04,05,06,07,08,09";
-        autoSelectAvailableSensors = true;
+        manualTestSensorIds = "06,07,08,09";
+        autoSelectAvailableSensors = false;
         armOnlyMode = false;
 
-        driveArms = true;
-        driveLeftArm = true;
-        driveLeftForeArm = true;
-        driveRightArm = true;
-        driveRightForeArm = true;
+        driveArms = false;
+        driveLeftArm = false;
+        driveLeftForeArm = false;
+        driveRightArm = false;
+        driveRightForeArm = false;
 
         driveLeftLeg = legBindingsValid;
         driveLeftCalf = legBindingsValid;
         driveRightLeg = legBindingsValid;
         driveRightCalf = legBindingsValid;
         unlockCalfDrivingForV8 = true;
-        allowStandaloneCalfTesting = true;
+        allowStandaloneCalfTesting = false;
 
-        // 全身模式中02/04必须和01/03同时参与，不再按“只测大臂”逻辑隔离。
-        isolateUpperArmTestingFromForearms = false;
-        lockForeArmsToCalibrationRest = false;
+        isolateUpperArmTestingFromForearms = true;
+        lockForeArmsToCalibrationRest = true;
     }
 
     /// <summary>
@@ -507,8 +505,8 @@ public class MotionCaptureController : MonoBehaviour
         // V8保留Inspector中的总开关和左右侧开关，允许01或03单独参与，
         // 也允许在腿部调试时完全关闭手臂。这里只冻结映射参数，不再强制开启通道。
 
-        // V8.11全身诊断：02/04作为真实输入驱动小臂；非全身模式仍保留旧锁定策略。
-        lockForeArmsToCalibrationRest = !fullBodyDiagnosticMode;
+        // 下肢版本始终把两侧前臂锁定在标定休息姿势。
+        lockForeArmsToCalibrationRest = true;
         driveLeftForeArmRelativeToLeftArm = false;
         suppressLeftForeArmAxialTwist = true;
 
@@ -617,23 +615,22 @@ public class MotionCaptureController : MonoBehaviour
 
     private void Awake()
     {
-        ApplyFullBodyDiagnosticPreset();
+        ApplyLowerBodyOnlyPreset();
         // Unity窗口失焦时仍持续消费串口，避免后台线程累积满256帧后一次性恢复。
         Application.runInBackground = true;
 
         Debug.LogWarning("\n==================================================\n" +
-            "[V8.20 ACTIVE] MotionCaptureController.Awake\n" +
+            "[V8.21 ACTIVE] MotionCaptureController.Awake\n" +
             "Build=" + BuildVersion + "\n" +
-            "模式：强制选择01~09，九路全部参与稳定检查、标定和驱动\n" +
-            "上肢：01/02驱动左大臂/左小臂，03/04驱动右大臂/右小臂\n" +
-            "躯干：05驱动Spine1\n" +
+            "模式：强制选择06~09，仅四个下肢传感器参与稳定检查、标定和驱动\n" +
+            "上肢与躯干：01~05不参与驱动，每帧保持角色初始局部旋转\n" +
             "下肢：06+07驱动左大小腿，08+09驱动右大小腿\n" +
             "在线/稳定：按每路实测Hz自适应离线宽限；单次尖峰不立即清空稳定状态\n" +
             "界面：保留V1高对比深色遥测表；通信与历史标定结果分栏显示\n" +
-            "低频：01/03/06/08启用200ms/7°限幅短时预测；积压仍只取最新姿态\n" +
+            "低频：06/08启用200ms/7°限幅短时预测；积压仍只取最新姿态\n" +
             "膝角/小腿驱动：仅消费严格时间配对数据；配对空档保持最后安全姿势\n" +
             "数据：SerialParser原始校验 -> MotionDataHub最新快照/超时 -> 单一快照分发\n" +
-            "运行闸门：标定先锁定；九路各自达到1秒帧龄、5Hz和3个新帧后才驱动\n" +
+            "运行闸门：标定先锁定；06~09各自达到1秒帧龄、5Hz和3个新帧后才驱动\n" +
             "故障隔离：单路断流保持最后骨骼姿势；恢复时限速追赶，不清空诊断\n" +
             "==================================================");
 
@@ -671,7 +668,7 @@ public class MotionCaptureController : MonoBehaviour
 
     private void Start()
     {
-        ApplyFullBodyDiagnosticPreset();
+        ApplyLowerBodyOnlyPreset();
         ApplyContinuousArmPreset();
         ApplyV58LegPreset();
 
@@ -776,7 +773,7 @@ public class MotionCaptureController : MonoBehaviour
             };
         }
         ApplyInspectorSettingsToArmDriver();
-        Debug.LogWarning("[V8.11全身诊断/右大臂输入确认] 03 -> Avatar右大臂；只做A-Pose标定；随后使用传感器局部Delta连续三轴矩阵；无动作识别、无姿态吸附、无顶部提示");
+        Debug.LogWarning("[V8.21下肢模式] 仅06/07/08/09参与；01~05不标定、不驱动，上半身保持初始姿势");
 
         ResolveAvatarRoot();
         avatarRootBaseRotation = avatarRoot != null ? avatarRoot.rotation : Quaternion.identity;
@@ -809,7 +806,7 @@ public class MotionCaptureController : MonoBehaviour
 
         BindUIEvents();
 
-        Debug.LogWarning($"[V8.20 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；{zigbeeScheduledTransmitRateHz}Hz错峰自动重同步；测试选择={SensorTestSelectionSummary}；腿部配对≤{legDriveMaxPairSkewSeconds * 1000f:F0}ms/年龄≤{legDriveMaxPairAgeSeconds * 1000f:F0}ms；单路断流保持；恢复限速腿={legMaximumAngularSpeedDegPerSec:F0}°/s、上肢={upperBodyMaximumAngularSpeedDegPerSec:F0}°/s；AI诊断日志=连接即增量写盘；后台运行={Application.runInBackground}");
+        Debug.LogWarning($"[V8.21 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；{zigbeeScheduledTransmitRateHz}Hz四节点错峰自动重同步；测试选择={SensorTestSelectionSummary}；腿部配对≤{legDriveMaxPairSkewSeconds * 1000f:F0}ms/年龄≤{legDriveMaxPairAgeSeconds * 1000f:F0}ms；上半身保持Rest；单路断流保持；恢复限速腿={legMaximumAngularSpeedDegPerSec:F0}°/s；AI诊断日志=连接即增量写盘；后台运行={Application.runInBackground}");
     }
 
     private void Update()
@@ -877,7 +874,7 @@ public class MotionCaptureController : MonoBehaviour
         if (!State.IsDriving)
         {
             // 等待运行数据或链路暂停时只恢复人物姿势；绝不调用processor.Reset，
-            // 因而九路Hz、帧龄、最后四元数和协议错误计数会继续保留并更新。
+            // 因而06~09的Hz、帧龄、最后四元数和协议错误计数会继续保留并更新。
             if (IsWaitingForRuntimeData)
                 ResetAllBonesToRest();
             return;
@@ -969,7 +966,7 @@ public class MotionCaptureController : MonoBehaviour
             armDriver != null && armDriver.IsCalibrated &&
             (leftArmFresh || leftForeArmFresh || rightArmFresh || rightForeArmFresh))
         {
-            armDriver.LeftForeArmInputAvailable = fullBodyDiagnosticMode && leftForeArmFresh;
+            armDriver.LeftForeArmInputAvailable = false;
             bool armApplied = armDriver.ApplyAvailable(
                 processor.TransformedQuaternions,
                 GetBoneTransform(LeftArmIndex),
@@ -986,7 +983,7 @@ public class MotionCaptureController : MonoBehaviour
                 Debug.LogWarning($"[ArmDrive] 本帧未应用：{armDriver.LastError}");
         }
 
-        // 非全身诊断模式下，02/04仍可走通用单传感器路径；全身模式由ArmPoseDriver直接驱动。
+        // 下肢模式不创建02/04通用参与者；保留调用只用于兼容旧控制器结构。
         ApplyGenericStandaloneDriverForIndex(LeftForeArmIndex, transformed);
         ApplyGenericStandaloneDriverForIndex(RightForeArmIndex, transformed);
     }
@@ -1083,17 +1080,17 @@ public class MotionCaptureController : MonoBehaviour
             BacklogDiscarded = BacklogDiscardedFrameCount
         };
 
-        int count = config != null ? Mathf.Max(0, config.deviceCount) : 9;
-        var sensors = new AiDiagnosticLogger.SensorSnapshot[count];
+        var sensors = new AiDiagnosticLogger.SensorSnapshot[RetainedSensorCount];
         Quaternion[] quaternions = TransformedQuaternions;
-        for (int i = 0; i < count; i++)
+        for (int outputIndex = 0; outputIndex < RetainedSensorCount; outputIndex++)
         {
+            int i = FirstRetainedSensorIndex + outputIndex;
             bool hasV2 = parser != null && parser.HasV2Source(i);
-            sensors[i] = new AiDiagnosticLogger.SensorSnapshot
+            sensors[outputIndex] = new AiDiagnosticLogger.SensorSnapshot
             {
                 Id = i + 1,
                 Role = GetSensorRoleLabel(i),
-                Required = fullBodyDiagnosticMode ? i < 9 : IsSensorRequiredForCurrentDrive(i),
+                Required = true,
                 Online = IsSensorOnline(i),
                 RuntimeReady = IsSensorRuntimeReady(i),
                 Stable = IsSensorStable(i),
@@ -1226,7 +1223,7 @@ public class MotionCaptureController : MonoBehaviour
             Application.unityVersion,
             port,
             baud,
-            config != null ? config.deviceCount : 9);
+            RetainedSensorCount);
         nextAiDiagnosticSnapshotTime = Time.unscaledTime;
         lastAiDiagnosticState = string.Empty;
         aiDiagnosticMarkerCount = 0;
@@ -1457,7 +1454,7 @@ public class MotionCaptureController : MonoBehaviour
         if (Serial != null && Serial.Parser != null &&
             Serial.Parser.DuplicateLogicalIdConflictCount > 0)
         {
-            reason = "检测到不同硬件使用了相同设备ID；请修正设备01~09身份后重新连接";
+            reason = "检测到不同硬件使用了相同设备ID；请修正设备06~09身份后重新连接";
             return false;
         }
 
@@ -1480,8 +1477,8 @@ public class MotionCaptureController : MonoBehaviour
                 LeftArmIndex, LeftArmIndex, "左大臂01", ref anyAvailable, out reason))
             return false;
         if (!CheckCandidateStable(
-                allowLeftForeArm && (fullBodyDiagnosticMode ||
-                    !(isolateUpperArmTestingFromForearms && leftArmAvailable)),
+                allowLeftForeArm &&
+                    !(isolateUpperArmTestingFromForearms && leftArmAvailable),
                 LeftForeArmIndex, LeftForeArmIndex, "左小臂02单独", ref anyAvailable, out reason))
             return false;
 
@@ -1489,8 +1486,8 @@ public class MotionCaptureController : MonoBehaviour
                 RightArmIndex, RightArmIndex, "右大臂03", ref anyAvailable, out reason))
             return false;
         if (!CheckCandidateStable(
-                allowRightForeArm && (fullBodyDiagnosticMode ||
-                    !(isolateUpperArmTestingFromForearms && rightArmAvailable)),
+                allowRightForeArm &&
+                    !(isolateUpperArmTestingFromForearms && rightArmAvailable),
                 RightForeArmIndex, RightForeArmIndex, "右小臂04单独", ref anyAvailable, out reason))
             return false;
 
@@ -1531,7 +1528,7 @@ public class MotionCaptureController : MonoBehaviour
         {
             reason = sensorTestSelectionMode == SensorTestSelectionMode.ManualIdList
                 ? $"手动测试列表[{GetNormalizedManualSensorIdList()}]中没有可用且稳定的传感器"
-                : "尚未收到01~09任意一个可驱动传感器的有效数据";
+                : "尚未收到06~09任意一个可驱动传感器的有效数据";
             return false;
         }
 
@@ -1995,13 +1992,11 @@ public class MotionCaptureController : MonoBehaviour
         }
 
         if ((sensorIndex == LeftForeArmIndex || sensorIndex == RightForeArmIndex) &&
-            !fullBodyDiagnosticMode &&
             !IsGenericStandaloneParticipant(sensorIndex) &&
             !IsArmSensorRequiredForCalibration(sensorIndex))
             return SensorCalibrationUiState.Locked;
 
-        if (sensorIndex == (int)BoneIndex.Spine &&
-            !fullBodyDiagnosticMode && !IsGenericStandaloneParticipant(sensorIndex))
+        if (sensorIndex == (int)BoneIndex.Spine && !IsGenericStandaloneParticipant(sensorIndex))
             return SensorCalibrationUiState.NotDriven;
 
         bool potentiallyParticipates =
@@ -2013,9 +2008,6 @@ public class MotionCaptureController : MonoBehaviour
                 (leftCalfParticipatesInCalibration || leftStandaloneCalfParticipatesInCalibration)) ||
             (sensorIndex == RightCalfSensorIndex &&
                 (rightCalfParticipatesInCalibration || rightStandaloneCalfParticipatesInCalibration)) ||
-            (fullBodyDiagnosticMode && sensorIndex == LeftForeArmIndex && driveLeftForeArm) ||
-            (fullBodyDiagnosticMode && sensorIndex == RightForeArmIndex && driveRightForeArm) ||
-            (fullBodyDiagnosticMode && sensorIndex == (int)BoneIndex.Spine) ||
             IsGenericStandaloneParticipant(sensorIndex);
 
         if (!potentiallyParticipates)
@@ -2042,7 +2034,7 @@ public class MotionCaptureController : MonoBehaviour
     /// </summary>
     private void StartCalibrationCountdown()
     {
-        ApplyFullBodyDiagnosticPreset();
+        ApplyLowerBodyOnlyPreset();
         // 在倒计时开始瞬间锁存本轮允许的在线组合；之后未选择设备绝不会加入驱动。
         // 手动列表模式即使其他设备仍持续发送数据，也只接管manualTestSensorIds中的ID。
         bool allowLeftArm = IsSensorSelectedForTesting(LeftArmIndex, driveArms && driveLeftArm);
@@ -2075,17 +2067,10 @@ public class MotionCaptureController : MonoBehaviour
             !rightLegParticipatesInCalibration && rightCalfAvailable && allowStandaloneCalfTesting;
 
         ClearGenericStandaloneParticipants();
-        // 全身诊断时02/04由ArmPoseDriver与01/03同组标定，不再重复进入通用独立驱动器。
-        TryEnableGenericStandaloneParticipant(LeftForeArmIndex,
-            !fullBodyDiagnosticMode &&
-            IsSensorSelectedForTesting(LeftForeArmIndex, driveLeftForeArm) &&
-            !(isolateUpperArmTestingFromForearms && leftArmParticipatesInCalibration));
-        TryEnableGenericStandaloneParticipant(RightForeArmIndex,
-            !fullBodyDiagnosticMode &&
-            IsSensorSelectedForTesting(RightForeArmIndex, driveRightForeArm) &&
-            !(isolateUpperArmTestingFromForearms && rightArmParticipatesInCalibration));
-        TryEnableGenericStandaloneParticipant((int)BoneIndex.Spine,
-            IsSensorSelectedForTesting((int)BoneIndex.Spine, false));
+        // 下肢版本明确禁止01~05通过通用单传感器路径重新加入驱动。
+        TryEnableGenericStandaloneParticipant(LeftForeArmIndex, false);
+        TryEnableGenericStandaloneParticipant(RightForeArmIndex, false);
+        TryEnableGenericStandaloneParticipant((int)BoneIndex.Spine, false);
 
         bool anyParticipant = leftArmParticipatesInCalibration ||
                               rightArmParticipatesInCalibration ||
@@ -2135,7 +2120,7 @@ public class MotionCaptureController : MonoBehaviour
         calibrationSamplingActive = false;
         calibrationCountdownStatus = "已锁存当前在线传感器组合，请保持初始姿态";
 
-        Debug.Log($"[V8.11全身标定] 选择={SensorTestSelectionSummary}；参与：01={leftArmParticipatesInCalibration}, " +
+        Debug.Log($"[V8.21下肢标定] 选择={SensorTestSelectionSummary}；参与：01={leftArmParticipatesInCalibration}, " +
             $"02={IsArmSensorRequiredForCalibration(LeftForeArmIndex)}, 03={rightArmParticipatesInCalibration}, " +
             $"04={IsArmSensorRequiredForCalibration(RightForeArmIndex)}, 05={IsGenericStandaloneParticipant((int)BoneIndex.Spine)}, 06={leftLegParticipatesInCalibration}, " +
             $"07配对={leftCalfParticipatesInCalibration}, 07单独={leftStandaloneCalfParticipatesInCalibration}, " +
@@ -2300,7 +2285,7 @@ public class MotionCaptureController : MonoBehaviour
             ? (Quaternion[])source.Clone()
             : new Quaternion[Mathf.Max(4, config != null ? config.deviceCount : 4)];
 
-        // 平均本轮所有真正参与的手臂传感器。全身诊断中01/02/03/04均使用各自真实样本。
+        // 兼容旧标定结构；下肢模式中手臂索引不会进入此循环的处理分支。
         int[] armIndices = { LeftArmIndex, LeftForeArmIndex, RightArmIndex, RightForeArmIndex };
         for (int i = 0; i < armIndices.Length; i++)
         {
@@ -2332,8 +2317,8 @@ public class MotionCaptureController : MonoBehaviour
         runtimeDriveSuspended = false;
         runtimeRecoveryFreshSince = -1f;
 
-        // 参与列表已在倒计时开始时锁存。全身诊断预设仅恢复通道开关，不改变锁存结果。
-        ApplyFullBodyDiagnosticPreset();
+        // 参与列表已在倒计时开始时锁存。下肢预设仅恢复固定通道开关，不改变锁存结果。
+        ApplyLowerBodyOnlyPreset();
         ApplyContinuousArmPreset();
         ApplyV58LegPreset();
         ApplyInspectorSettingsToLeftLegDriver();
@@ -2785,8 +2770,6 @@ public class MotionCaptureController : MonoBehaviour
             GetSensorFrameRateHz(deviceId),
             hasV2 ? parser.GetSourceReportedFrameRateHz(deviceId) : 0f,
             hasV2 ? parser.GetSourceDeliveryPercent(deviceId) : 0f,
-            LeftElbowFlexionAngleDeg,
-            RightElbowFlexionAngleDeg,
             LeftKneeFlexionAngleDeg,
             LeftKneeIncludedAngleDeg,
             RightKneeFlexionAngleDeg,
@@ -3107,7 +3090,7 @@ public class MotionCaptureController : MonoBehaviour
         if (runtimeFaultCounts != null && faultSensorIndex >= 0 && faultSensorIndex < runtimeFaultCounts.Length)
             runtimeFaultCounts[faultSensorIndex]++;
 
-        string message = $"通信故障，已停止旧姿态消费并恢复人物：{lastRuntimeFaultSummary}；保留标定和九路诊断，等待新数据恢复";
+        string message = $"通信故障，已停止旧姿态消费并恢复人物：{lastRuntimeFaultSummary}；保留标定和06~09诊断，等待新数据恢复";
         State.SetDriving(false);
         calibrationLockedWaitingForRuntime = false;
         runtimeDriveSuspended = true;
@@ -3165,7 +3148,7 @@ public class MotionCaptureController : MonoBehaviour
         if (runtimeRecoveryFreshSince < 0f)
         {
             runtimeRecoveryFreshSince = Time.time;
-            calibrationCountdownStatus = $"九路运行条件已满足，连续确认{runtimeReadinessHoldSeconds:F1}秒后自动开始驱动";
+            calibrationCountdownStatus = $"四路运行条件已满足，连续确认{runtimeReadinessHoldSeconds:F1}秒后自动开始驱动";
             return false;
         }
 
@@ -3193,7 +3176,7 @@ public class MotionCaptureController : MonoBehaviour
         State.SetDriving(true);
         calibrationCountdownStatus = wasRuntimeRecovery
             ? "通信已恢复，沿用本次标定继续运动"
-            : "标定已锁定且九路运行数据达标，已开始运动";
+            : "标定已锁定且06~09运行数据达标，已开始运动";
         if (leftCalfParticipatesInCalibration || rightCalfParticipatesInCalibration)
         {
             TryInitializeKneeMeasurements();
@@ -3208,7 +3191,7 @@ public class MotionCaptureController : MonoBehaviour
             $"low_rate_compat={lowRateRuntimeCompatibilityEnabled}, min_receive_hz={runtimeMinimumFrameRateHz:F1}, base_age_s={runtimeDeviceTimeoutSeconds:F1}, warmup_frames={runtimeReadinessMinimumUniqueFrames}");
         WriteAiDiagnosticSnapshot(wasRuntimeRecovery ? "runtime_recovered" : "runtime_gate_passed");
         Debug.LogWarning(
-            $"[V8.20][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
+            $"[V8.21][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
             (wasRuntimeRecovery ? "沿用已锁存标定恢复驱动" : "首次进入驱动"));
         return true;
     }
@@ -3251,7 +3234,7 @@ public class MotionCaptureController : MonoBehaviour
         if (issueCount > 0)
             return false;
 
-        reason = "九路均已满足运行条件";
+        reason = "06~09均已满足运行条件";
         return true;
     }
 
@@ -3750,12 +3733,7 @@ public class MotionCaptureController : MonoBehaviour
 
     private bool IsArmSensorRequiredForCalibration(int sensorIndex)
     {
-        if (sensorIndex == LeftArmIndex) return leftArmParticipatesInCalibration;
-        if (sensorIndex == RightArmIndex) return rightArmParticipatesInCalibration;
-        if (sensorIndex == LeftForeArmIndex)
-            return fullBodyDiagnosticMode && leftArmParticipatesInCalibration && driveLeftForeArm;
-        if (sensorIndex == RightForeArmIndex)
-            return fullBodyDiagnosticMode && rightArmParticipatesInCalibration && driveRightForeArm;
+        // V8.21固定下肢模式：01~04永远不参与本轮标定和运行闸门。
         return false;
     }
 

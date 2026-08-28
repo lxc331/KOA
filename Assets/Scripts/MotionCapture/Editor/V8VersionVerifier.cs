@@ -6,7 +6,7 @@ using UnityEngine;
 
 public static class V8VersionVerifier
 {
-    private const string BuildVersion = "V8.20-PAIR-HOLD-RESYNC-20260822";
+    private const string BuildVersion = "V8.21-LOWER-BODY-4SENSOR-20260827";
 
     [DidReloadScripts]
     private static void OnScriptsReloaded()
@@ -17,32 +17,29 @@ public static class V8VersionVerifier
 
         Debug.LogWarning(
             "\n##################################################\n" +
-            "# V8.20 时间配对、断流保持与错峰自恢复版已完成编译\n" +
+            "# V8.21 四传感器下肢实时驱动版已完成编译\n" +
             "# Build: " + BuildVersion + "\n" +
-            "# 强制选择：01,02,03,04,05,06,07,08,09\n" +
-            "# 上肢：01/02左大臂/左小臂，03/04右大臂/右小臂\n" +
-            "# 躯干：05 -> Spine1\n" +
+            "# 强制选择：06,07,08,09\n" +
+            "# 上肢与躯干：01~05不参与标定或驱动，保持初始局部旋转\n" +
             "# 下肢：06+07左大小腿，08+09右大小腿\n" +
-            "# 右大臂：保留V8.10局部Delta连续三轴矩阵\n" +
-            "# 禁用：动作识别、标准姿态吸附、四姿态教学和顶部动作提示\n" +
-            "# 状态机：标定锁定后等待九路运行数据；运行故障不清空DataHub\n" +
+            "# 状态机：标定锁定后等待四路运行数据；运行故障不清空DataHub\n" +
             "# 诊断：区分Unity接收Hz、控制板发送Hz和链路到达率\n" +
-            "# AI日志：连接即创建JSONL；每秒九路快照；异常退出仍保留已写内容\n" +
+            "# AI日志：连接即创建JSONL；每秒四路快照；异常退出仍保留已写内容\n" +
             "# 腿部：大小腿按源时间配对；无可靠配对时保持最后小腿姿态\n" +
-            "# 恢复：骨骼角速度限幅；Zigbee未同步时自动重发时隙命令\n" +
+            "# 恢复：骨骼角速度限幅；Zigbee四节点未同步时自动重发时隙命令\n" +
             "# 目录：每次连接自动创建 Logs/yyyyMMdd_HHmmss_fff\n" +
             "# MotionCaptureController: " + FormatPaths(controllerPaths) + "\n" +
             "# ArmPoseDriver: " + FormatPaths(armPaths) + "\n" +
             "# StandaloneBonePoseDriver: " + FormatPaths(standalonePaths) + "\n" +
-            "# 进入Play后还应看到 [V8.20 ACTIVE]\n" +
+            "# 进入Play后还应看到 [V8.21 ACTIVE]\n" +
             "##################################################");
 
         if (controllerPaths.Length != 1)
-            Debug.LogError("[V8.11重复脚本检查] MotionCaptureController.cs应只有1份：" + FormatPaths(controllerPaths));
+            Debug.LogError("[V8.21重复脚本检查] MotionCaptureController.cs应只有1份：" + FormatPaths(controllerPaths));
         if (armPaths.Length != 1)
-            Debug.LogError("[V8.11重复脚本检查] ArmPoseDriver.cs应只有1份：" + FormatPaths(armPaths));
+            Debug.LogError("[V8.21重复脚本检查] ArmPoseDriver.cs应只有1份：" + FormatPaths(armPaths));
         if (standalonePaths.Length != 1)
-            Debug.LogError("[V8.11重复脚本检查] StandaloneBonePoseDriver.cs应只有1份：" + FormatPaths(standalonePaths));
+            Debug.LogError("[V8.21重复脚本检查] StandaloneBonePoseDriver.cs应只有1份：" + FormatPaths(standalonePaths));
     }
 
     private static string[] FindExactScriptPaths(string scriptName)

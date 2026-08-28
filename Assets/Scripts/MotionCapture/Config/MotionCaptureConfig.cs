@@ -19,7 +19,7 @@ public class MotionCaptureConfig : ScriptableObject
     // ═══════════════════════════════════════════════════════════════
 
     [Header("设备")]
-    [Tooltip("IMU 传感器的总数量，必须与 boneNames 数组长度一致")]
+    [Tooltip("协议与骨骼映射槽位数。下肢四传感器版仍保持9，实际只接收并驱动索引5～8（逻辑ID 06～09）。")]
     public int deviceCount = 9;
 
     [Header("骨骼映射")]
@@ -152,10 +152,10 @@ public class MotionCaptureConfig : ScriptableObject
     [Tooltip("连续处于稳定区达到该时长后才判定稳定，与设备刷新率无关。")]
     public float requiredStableDurationSeconds = 0.6f;
 
-    [Tooltip("是否要求所有 9 个传感器都稳定才允许开始（严格模式）")]
+    [Tooltip("是否要求本轮选中的06～09四个传感器都稳定才允许开始（下肢模式固定要求这四路）。")]
     public bool requireAllDevices = false;
 
-    [Tooltip("宽松模式下至少需要多少个设备稳定才允许开始；手臂模式建议至少4个")]
+    [Tooltip("兼容旧模式的最少稳定设备数；下肢四传感器模式使用手动列表并要求06～09全部稳定。")]
     public int minStableDevices = 4;
 
     [Tooltip("若某个骨骼在场景中未找到对应 GameObject，是否在稳定性判断中忽略它")]
@@ -328,4 +328,3 @@ public class MotionCaptureConfig : ScriptableObject
         }
     }
 }
-

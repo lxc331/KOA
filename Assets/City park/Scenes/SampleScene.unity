@@ -13561,9 +13561,15 @@ MonoBehaviour:
   useStableCalibration: 1
   leftLegCalibrationSampleFramesRequired: 15
   rightLegCalibrationSampleFramesRequired: 15
-  armOnlyMode: 1
-  driveLeftLeg: 0
-  driveLeftCalf: 0
+  armOnlyMode: 0
+  sensorTestSelectionMode: 0
+  manualTestSensorIds: 06,07,08,09
+  autoSelectAvailableSensors: 0
+  allowStandaloneCalfTesting: 0
+  unlockCalfDrivingForV8: 1
+  isolateUpperArmTestingFromForearms: 1
+  driveLeftLeg: 1
+  driveLeftCalf: 1
   leftThighBoneAxisOffsetEuler: {x: 0, y: 0, z: 0}
   leftThighAxisInvertMode: 2
   limitLeftThighTwist: 1
@@ -13574,7 +13580,7 @@ MonoBehaviour:
   forceLeftThighRestForDebug: 0
   leftThighStaticCheckLogEnabled: 1
   driveRightLeg: 1
-  driveRightCalf: 0
+  driveRightCalf: 1
   rightThighBoneAxisOffsetEuler: {x: 0, y: 0, z: 0}
   rightThighAxisInvertMode: 2
   rightThighEulerRemapMode: 0
@@ -13590,11 +13596,11 @@ MonoBehaviour:
   rightLegStaticRestLockEnterDeg: 4
   rightLegStaticRestLockExitDeg: 7.5
   rightLegStaticRestStableFramesRequired: 3
-  driveArms: 1
-  driveLeftArm: 1
-  driveLeftForeArm: 1
-  driveRightArm: 1
-  driveRightForeArm: 1
+  driveArms: 0
+  driveLeftArm: 0
+  driveLeftForeArm: 0
+  driveRightArm: 0
+  driveRightForeArm: 0
   armSmoothingSpeed: 20
   armMinAngleThresholdDeg: 0.2
   leftArmBoneAxisOffsetEuler: {x: 0, y: 0, z: 0}
