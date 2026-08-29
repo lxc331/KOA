@@ -104,6 +104,8 @@ public class SerialController
             serialPort.ReadTimeout = readTimeoutMs;
             serialPort.ErrorReceived += OnSerialErrorReceived;
             serialPort.Open();
+            // 新连接不允许把USB/COM驱动残留字节当成当前序号基线。
+            serialPort.DiscardInBuffer();
             Debug.Log($"SerialController: Opened {portName} @{baudRate}");
             return true;
         }

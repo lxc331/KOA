@@ -932,12 +932,12 @@ public sealed class LeftLegPoseDriver
         Quaternion reorientedThighDelta =
             NormalizeSafe(thighAxisOffset * effectiveThighDelta * Quaternion.Inverse(thighAxisOffset));
 
-        // V77.1：围绕标定得到的真实“髋到膝”长轴去除 twist；保留前后踢与内收/外展两个摆动自由度。
+        // V8.22：沿新腿部算法指定的局部轴限制 twist；保留前后踢与内收/外展两个摆动自由度。
         if (limitThighTwist)
         {
             reorientedThighDelta = LimitTwistAroundAxis(
                 reorientedThighDelta,
-                calibratedThighLongAxisLocal,
+                GetTwistAxis(thighTwistAxisMode),
                 maxThighTwistDeg);
         }
 
@@ -983,7 +983,7 @@ public sealed class LeftLegPoseDriver
         CurrentKneeRelativeRotation = kneeSensorRelativeNow;
 
         Quaternion rawKneeDelta =
-            NormalizeSafe(kneeSensorRelativeNow * Quaternion.Inverse(kneeSensorRelativeReference));
+            NormalizeSafe(Quaternion.Inverse(kneeSensorRelativeReference) * kneeSensorRelativeNow);
 		
         Vector3 rawKneeEuler = rawKneeDelta.eulerAngles;
         Vector3 normKneeEuler = new Vector3(

@@ -8,7 +8,7 @@ using System.Xml;
 using UnityEngine;
 
 /// <summary>
-/// V8.21 四传感器下肢中文 Excel 遥测记录器。
+/// V8.22 四传感器下肢中文 Excel 遥测记录器。
 ///
 /// 记录流程：
 /// 1. 人物开始驱动时自动开始记录，仅把数据写入内存，不在运行过程中进行磁盘 I/O；

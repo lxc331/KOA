@@ -6,7 +6,7 @@ using UnityEngine;
 
 /// <summary>
 /// 串口协议回归测试。既可从 Unity 菜单执行，也可用 -executeMethod 在命令行执行。
-/// 不依赖真实串口，验证协议边界、校验、身份约束以及V8.21下肢四传感器选择。
+/// 不依赖真实串口，验证协议边界、校验、身份约束以及V8.22下肢四传感器选择。
 /// </summary>
 public static class SerialProtocolV2SelfTest
 {
@@ -41,6 +41,8 @@ public static class SerialProtocolV2SelfTest
         CorruptedV2FrameIsRejected();
         DuplicateLogicalIdIsRejected();
         SourceSequenceDetectsLossDuplicateAndOutOfOrder();
+        QuickSenderRestartResynchronizesAfterConfirmation();
+        SequenceOnlyRestartResynchronizesAfterConfirmation();
         ResetClearsOldFramesAndIdentityState();
         AdaptiveCalibrationTimeoutUsesEachDeviceCadence();
         PairedLegCalibrationChannelsAccumulateIndependently();
@@ -302,6 +304,40 @@ public static class SerialProtocolV2SelfTest
             "发送端序号/时钟没有正确估算控制板实际发送Hz");
         Require(Mathf.Abs(parser.GetSourceDeliveryPercent(6) - (200f / 3f)) < 0.1f,
             "接收帧/源端缺口没有正确计算链路到达率");
+    }
+
+    private static void QuickSenderRestartResynchronizesAfterConfirmation()
+    {
+        SerialParser parser = new SerialParser();
+        const uint hardwareId = 0x06060606u;
+        Append(parser, BuildV2Frame(6, hardwareId, 8u, 800u, Quaternion.identity));
+        Append(parser, BuildV2Frame(6, hardwareId, 1u, 100u, Quaternion.identity));
+        Append(parser, BuildV2Frame(6, hardwareId, 2u, 200u, Quaternion.identity));
+        Append(parser, BuildV2Frame(6, hardwareId, 3u, 300u, Quaternion.identity));
+
+        Require(parser.GetSourceRestartCount(5) == 1,
+            "发送端快速重启没有在连续新周期帧后重新同步");
+        Require(parser.GetLastSourceSequence(5) == 3u,
+            "快速重启重新同步后没有推进到新周期序号");
+        Require(parser.QueueCount == 2,
+            "快速重启确认前的候选帧进入了业务队列，或确认帧未进入队列");
+    }
+
+    private static void SequenceOnlyRestartResynchronizesAfterConfirmation()
+    {
+        SerialParser parser = new SerialParser();
+        const uint hardwareId = 0x09090909u;
+        Append(parser, BuildV2Frame(9, hardwareId, 100u, 10000u, Quaternion.identity));
+        Append(parser, BuildV2Frame(9, hardwareId, 1u, 10100u, Quaternion.identity));
+        Append(parser, BuildV2Frame(9, hardwareId, 2u, 10200u, Quaternion.identity));
+        Append(parser, BuildV2Frame(9, hardwareId, 3u, 10300u, Quaternion.identity));
+
+        Require(parser.GetSourceRestartCount(8) == 1,
+            "仅序号重置时没有在连续三个合法帧后重新同步");
+        Require(parser.GetSourceOutOfOrderFrameCount(8) == 2,
+            "序号重置确认前的候选乱序计数不正确");
+        Require(parser.GetLastSourceSequence(8) == 3u && parser.QueueCount == 2,
+            "仅序号重置后的确认帧没有恢复进入业务队列");
     }
 
     private static void ResetClearsOldFramesAndIdentityState()

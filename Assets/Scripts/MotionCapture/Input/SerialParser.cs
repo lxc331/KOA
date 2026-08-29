@@ -22,6 +22,8 @@ public class SerialParser
     private const byte SOURCE_FLAG_CLOCK_72MHZ = 0x04;
     private const byte SOURCE_FLAG_SLOTTED_TRANSMIT = 0x08;
     private const byte SOURCE_FLAG_LINK_SYNCED = 0x10;
+    private const int SOURCE_RESTART_CONFIRMATION_FRAMES = 3;
+    private const uint SOURCE_RESTART_STRONG_TICK_ROLLBACK_MS = 1000u;
 
     Parity parity;
     int dataBits;
@@ -54,6 +56,10 @@ public class SerialParser
     private readonly long[] sourceDuplicateFrameCount = new long[MAX_DEVICE_COUNT];
     private readonly long[] sourceOutOfOrderFrameCount = new long[MAX_DEVICE_COUNT];
     private readonly long[] sourceRestartCount = new long[MAX_DEVICE_COUNT];
+    private readonly bool[] hasSourceRestartCandidate = new bool[MAX_DEVICE_COUNT];
+    private readonly uint[] sourceRestartCandidateSequence = new uint[MAX_DEVICE_COUNT];
+    private readonly uint[] sourceRestartCandidateTickMs = new uint[MAX_DEVICE_COUNT];
+    private readonly int[] sourceRestartCandidateFrameCount = new int[MAX_DEVICE_COUNT];
     private readonly long[] duplicateLogicalIdCount = new long[MAX_DEVICE_COUNT];
     private readonly long[] sourceAcceptedFrameCount = new long[MAX_DEVICE_COUNT];
     private readonly float[] sourceReportedFrameRateHz = new float[MAX_DEVICE_COUNT];
@@ -133,6 +139,7 @@ public class SerialParser
             sourceDuplicateFrameCount[i] = 0;
             sourceOutOfOrderFrameCount[i] = 0;
             sourceRestartCount[i] = 0;
+            ClearSourceRestartCandidate(i);
             duplicateLogicalIdCount[i] = 0;
             sourceAcceptedFrameCount[i] = 0;
             sourceReportedFrameRateHz[i] = 0f;
@@ -157,6 +164,7 @@ public class SerialParser
             sourceDuplicateFrameCount[i] = 0;
             sourceOutOfOrderFrameCount[i] = 0;
             sourceRestartCount[i] = 0;
+            ClearSourceRestartCandidate(i);
             duplicateLogicalIdCount[i] = 0;
             sourceAcceptedFrameCount[i] = 0;
             sourceReportedFrameRateHz[i] = 0f;
@@ -561,22 +569,33 @@ public class SerialParser
             return true;
         }
 
-        bool senderRestarted = senderTickMs < lastSenderTickMs[deviceId] &&
-                               lastSenderTickMs[deviceId] - senderTickMs > 1000u;
+        uint delta = unchecked(sourceSequence - lastSourceSequence[deviceId]);
+        bool sequenceMovedBackward = delta >= 0x80000000u;
+        bool senderTickMovedBackward = senderTickMs < lastSenderTickMs[deviceId];
+        bool senderRestarted = sequenceMovedBackward && senderTickMovedBackward &&
+                               lastSenderTickMs[deviceId] - senderTickMs >
+                               SOURCE_RESTART_STRONG_TICK_ROLLBACK_MS;
+
+        // 串口/协调器可能先送来上一启动周期的残留帧；部分固件也可能只重置序号而不重置时钟。
+        // 连续确认三个单调推进的新周期帧后才重同步，单个真正的乱序旧包仍保持拒绝。
+        if (!senderRestarted && sequenceMovedBackward)
+            senderRestarted = ObserveSourceRestartCandidate(deviceId, sourceSequence, senderTickMs);
+
         if (senderRestarted)
         {
             sourceRestartCount[deviceId]++;
             lastSourceSequence[deviceId] = sourceSequence;
             lastSenderTickMs[deviceId] = senderTickMs;
+            ClearSourceRestartCandidate(deviceId);
             StartSourceTiming(deviceId, sourceFlags, arrivalStamp);
             sourceAcceptedFrameCount[deviceId]++;
             sourceReportedFrameRateHz[deviceId] = 0f;
             return true;
         }
 
-        uint delta = unchecked(sourceSequence - lastSourceSequence[deviceId]);
         if (delta == 0u)
         {
+            ClearSourceRestartCandidate(deviceId);
             sourceDuplicateFrameCount[deviceId]++;
             return false;
         }
@@ -587,6 +606,8 @@ public class SerialParser
         }
         if (delta > 1u)
             sourceLostFrameCount[deviceId] += delta - 1u;
+
+        ClearSourceRestartCandidate(deviceId);
 
         // V2发送端序号与发送端毫秒计时同时推进。即使中间无线帧丢失，
         // delta/tickDelta仍可估算控制板实际发送Hz，从而与Unity实际接收Hz分离诊断。
@@ -607,6 +628,39 @@ public class SerialParser
         lastSenderTickMs[deviceId] = senderTickMs;
         sourceAcceptedFrameCount[deviceId]++;
         return true;
+    }
+
+    private bool ObserveSourceRestartCandidate(int deviceId, uint sourceSequence, uint senderTickMs)
+    {
+        if (!hasSourceRestartCandidate[deviceId])
+        {
+            hasSourceRestartCandidate[deviceId] = true;
+            sourceRestartCandidateSequence[deviceId] = sourceSequence;
+            sourceRestartCandidateTickMs[deviceId] = senderTickMs;
+            sourceRestartCandidateFrameCount[deviceId] = 1;
+            return false;
+        }
+
+        uint sequenceStep = unchecked(sourceSequence - sourceRestartCandidateSequence[deviceId]);
+        uint tickStep = unchecked(senderTickMs - sourceRestartCandidateTickMs[deviceId]);
+        bool advancesMonotonically = sequenceStep > 0u && sequenceStep < 0x80000000u &&
+                                     tickStep > 0u && tickStep < 600000u;
+
+        sourceRestartCandidateSequence[deviceId] = sourceSequence;
+        sourceRestartCandidateTickMs[deviceId] = senderTickMs;
+        sourceRestartCandidateFrameCount[deviceId] = advancesMonotonically
+            ? sourceRestartCandidateFrameCount[deviceId] + 1
+            : 1;
+
+        return sourceRestartCandidateFrameCount[deviceId] >= SOURCE_RESTART_CONFIRMATION_FRAMES;
+    }
+
+    private void ClearSourceRestartCandidate(int deviceId)
+    {
+        hasSourceRestartCandidate[deviceId] = false;
+        sourceRestartCandidateSequence[deviceId] = 0u;
+        sourceRestartCandidateTickMs[deviceId] = 0u;
+        sourceRestartCandidateFrameCount[deviceId] = 0;
     }
 
     private void ResetSourceTiming(int deviceId)

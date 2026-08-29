@@ -3,7 +3,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// V8.21 四传感器下肢实时驱动版。
+/// V8.22 四传感器下肢通信恢复与双腿算法合并版。
 /// - 仅选择06左大腿、07左小腿、08右大腿、09右小腿参与稳定检查、标定和驱动；
 /// - 06+07、08+09分别驱动左右大小腿及膝关节；
 /// - 01~05不参与本轮运动，手臂和脊柱每帧保持角色初始局部旋转；
@@ -11,7 +11,7 @@ using UnityEngine;
 /// </summary>
 public class MotionCaptureController : MonoBehaviour
 {
-    public const string BuildVersion = "V8.21-LOWER-BODY-4SENSOR-20260827";
+    public const string BuildVersion = "V8.22-LOWER-BODY-LINK-RECOVERY-20260829";
     private const int CalibrationSamplesPerRequiredSensor = 5;
     public const int FirstRetainedSensorIndex = 5;
     public const int RetainedSensorCount = 4;
@@ -91,7 +91,7 @@ public class MotionCaptureController : MonoBehaviour
     [Tooltip("全部节点同步后仍定期维护一次，用于自动恢复测试中途重启的节点。")]
     [SerializeField, Range(10f, 60f)] private float zigbeeScheduleMaintenanceSeconds = 30f;
 
-    [Header("V8.21 四传感器下肢模式")]
+    [Header("V8.22 四传感器下肢模式")]
     [Tooltip("只允许下方列出的ID参与标定与骨骼驱动。本版本会在运行时强制恢复为06~09。")]
     [SerializeField] private SensorTestSelectionMode sensorTestSelectionMode = SensorTestSelectionMode.ManualIdList;
     [Tooltip("下肢模式固定选择06~09。仅接受01~09，使用逗号、空格或分号分隔。")]
@@ -179,7 +179,7 @@ public class MotionCaptureController : MonoBehaviour
     public bool driveRightCalf = true;
     public Vector3 rightThighBoneAxisOffsetEuler = Vector3.zero;
     public RightThighAxisInvertMode rightThighAxisInvertMode = RightThighAxisInvertMode.None;
-    public RightThighEulerRemapMode rightThighEulerRemapMode = RightThighEulerRemapMode.None;
+    public RightThighEulerRemapMode rightThighEulerRemapMode = RightThighEulerRemapMode.SwapYZ;
 
     [Header("右大腿 Twist 限制测试")]
     public bool limitRightThighTwist = false;
@@ -466,7 +466,7 @@ public class MotionCaptureController : MonoBehaviour
 #endif
 
     /// <summary>
-    /// V8.21下肢四传感器预设。该预设在Awake/Start/标定入口重复应用，
+    /// V8.22下肢四传感器预设。该预设在Awake/Start/标定入口重复应用，
     /// 用于覆盖旧场景中遗留的全身诊断、手臂驱动或关闭腿部等序列化值。
     /// </summary>
     private void ApplyLowerBodyOnlyPreset()
@@ -600,11 +600,11 @@ public class MotionCaptureController : MonoBehaviour
         forceLeftThighRestForDebug = false;
         leftThighStaticCheckLogEnabled = false;
 
-        // V7：保留V5统一基础链路与V6右侧横向符号；新增只在屈伸占主导时生效的串轴抑制。
+        // V8.22：合并新右腿算法的 Y/Z 轴交换；不再叠加横向镜像或串轴抑制。
         rightThighBoneAxisOffsetEuler = Vector3.zero;
         rightThighAxisInvertMode = RightThighAxisInvertMode.InvertY;
-        rightThighEulerRemapMode = RightThighEulerRemapMode.None;
-        limitRightThighTwist = true;
+        rightThighEulerRemapMode = RightThighEulerRemapMode.SwapYZ;
+        limitRightThighTwist = false;
         rightThighTwistAxisMode = RightThighTwistAxisMode.LocalY;
         maxRightThighTwistDeg = 0f;
         rightThighApplyOrder = RightThighApplyOrder.RestThenDelta;
@@ -620,7 +620,7 @@ public class MotionCaptureController : MonoBehaviour
         Application.runInBackground = true;
 
         Debug.LogWarning("\n==================================================\n" +
-            "[V8.21 ACTIVE] MotionCaptureController.Awake\n" +
+            "[V8.22 ACTIVE] MotionCaptureController.Awake\n" +
             "Build=" + BuildVersion + "\n" +
             "模式：强制选择06~09，仅四个下肢传感器参与稳定检查、标定和驱动\n" +
             "上肢与躯干：01~05不参与驱动，每帧保持角色初始局部旋转\n" +
@@ -773,7 +773,7 @@ public class MotionCaptureController : MonoBehaviour
             };
         }
         ApplyInspectorSettingsToArmDriver();
-        Debug.LogWarning("[V8.21下肢模式] 仅06/07/08/09参与；01~05不标定、不驱动，上半身保持初始姿势");
+        Debug.LogWarning("[V8.22下肢模式] 仅06/07/08/09参与；01~05不标定、不驱动，上半身保持初始姿势");
 
         ResolveAvatarRoot();
         avatarRootBaseRotation = avatarRoot != null ? avatarRoot.rotation : Quaternion.identity;
@@ -806,7 +806,7 @@ public class MotionCaptureController : MonoBehaviour
 
         BindUIEvents();
 
-        Debug.LogWarning($"[V8.21 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；{zigbeeScheduledTransmitRateHz}Hz四节点错峰自动重同步；测试选择={SensorTestSelectionSummary}；腿部配对≤{legDriveMaxPairSkewSeconds * 1000f:F0}ms/年龄≤{legDriveMaxPairAgeSeconds * 1000f:F0}ms；上半身保持Rest；单路断流保持；恢复限速腿={legMaximumAngularSpeedDegPerSec:F0}°/s；AI诊断日志=连接即增量写盘；后台运行={Application.runInBackground}");
+        Debug.LogWarning($"[V8.22 ACTIVE][MotionCaptureController.Start] Build={BuildVersion}；{zigbeeScheduledTransmitRateHz}Hz四节点错峰自动重同步；源端序号重启自动恢复；新双腿轴映射已合并；测试选择={SensorTestSelectionSummary}；腿部配对≤{legDriveMaxPairSkewSeconds * 1000f:F0}ms/年龄≤{legDriveMaxPairAgeSeconds * 1000f:F0}ms；上半身保持Rest；单路断流保持；恢复限速腿={legMaximumAngularSpeedDegPerSec:F0}°/s；AI诊断日志=连接即增量写盘；后台运行={Application.runInBackground}");
     }
 
     private void Update()
@@ -2120,7 +2120,7 @@ public class MotionCaptureController : MonoBehaviour
         calibrationSamplingActive = false;
         calibrationCountdownStatus = "已锁存当前在线传感器组合，请保持初始姿态";
 
-        Debug.Log($"[V8.21下肢标定] 选择={SensorTestSelectionSummary}；参与：01={leftArmParticipatesInCalibration}, " +
+        Debug.Log($"[V8.22下肢标定] 选择={SensorTestSelectionSummary}；参与：01={leftArmParticipatesInCalibration}, " +
             $"02={IsArmSensorRequiredForCalibration(LeftForeArmIndex)}, 03={rightArmParticipatesInCalibration}, " +
             $"04={IsArmSensorRequiredForCalibration(RightForeArmIndex)}, 05={IsGenericStandaloneParticipant((int)BoneIndex.Spine)}, 06={leftLegParticipatesInCalibration}, " +
             $"07配对={leftCalfParticipatesInCalibration}, 07单独={leftStandaloneCalfParticipatesInCalibration}, " +
@@ -3191,7 +3191,7 @@ public class MotionCaptureController : MonoBehaviour
             $"low_rate_compat={lowRateRuntimeCompatibilityEnabled}, min_receive_hz={runtimeMinimumFrameRateHz:F1}, base_age_s={runtimeDeviceTimeoutSeconds:F1}, warmup_frames={runtimeReadinessMinimumUniqueFrames}");
         WriteAiDiagnosticSnapshot(wasRuntimeRecovery ? "runtime_recovered" : "runtime_gate_passed");
         Debug.LogWarning(
-            $"[V8.21][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
+            $"[V8.22][GlobalLinkRecovered] Build={BuildVersion}；{RuntimeGateSummary}、各新增≥{runtimeReadinessMinimumUniqueFrames}帧并连续{runtimeReadinessHoldSeconds:F1}s；" +
             (wasRuntimeRecovery ? "沿用已锁存标定恢复驱动" : "首次进入驱动"));
         return true;
     }
@@ -3733,7 +3733,7 @@ public class MotionCaptureController : MonoBehaviour
 
     private bool IsArmSensorRequiredForCalibration(int sensorIndex)
     {
-        // V8.21固定下肢模式：01~04永远不参与本轮标定和运行闸门。
+        // V8.22固定下肢模式：01~04永远不参与本轮标定和运行闸门。
         return false;
     }
 
