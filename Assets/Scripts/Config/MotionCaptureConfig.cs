@@ -1,0 +1,207 @@
+using UnityEngine;
+
+/// <summary>
+/// 动捕系统可序列化配置（ScriptableObject）。
+/// 
+/// 使用方式：
+///   1. 在 Unity 编辑器中右键 → Create → MotionCapture → Config 创建配置资产
+///   2. 在 Inspector 中填写对应角色的骨骼名称、传感器数量、串口参数等
+///   3. 将配置资产拖入 MotionCaptureController 组件的 config 字段
+///   4. 更换角色模型时只需切换配置资产，无需修改代码
+/// 
+/// 所有运行时参数集中于此，避免在代码中硬编码。
+/// </summary>
+[CreateAssetMenu(fileName = "MotionCaptureConfig", menuName = "MotionCapture/Config")]
+public class MotionCaptureConfig : ScriptableObject
+{
+    // ═══════════════════════════════════════════════════════════════
+    //  设备与骨骼映射
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("设备")]
+    [Tooltip("IMU 传感器的总数量，必须与 boneNames 数组长度一致")]
+    public int deviceCount = 9;
+
+    [Header("骨骼映射")]
+    [Tooltip("每个传感器对应的骨骼节点名称，长度必须等于 deviceCount。\n" +
+             "索引 0-3 = 手臂(左上/左前/右上/右前)，4 = 脊柱，5-8 = 腿部(左大腿/左小腿/右大腿/右小腿)")]
+    public string[] boneNames = new string[]
+    {
+        // 索引 0: 左上臂传感器 → 3D 模型左上臂骨骼
+        "Bip01 L UpperArm",
+        // 索引 1: 左前臂传感器 → 3D 模型左前臂骨骼
+        "Bip01 L Forearm",
+        // 索引 2: 右上臂传感器 → 3D 模型右上臂骨骼
+        "Bip01 R UpperArm",
+        // 索引 3: 右前臂传感器 → 3D 模型右前臂骨骼
+        "Bip01 R Forearm",
+        // 索引 4: 躯干传感器 → 3D 模型脊柱骨骼
+        "Bip01 Spine2",
+        // 索引 5: 左大腿传感器 → 3D 模型左大腿骨骼
+        "Bip01 L Thigh",
+        // 索引 6: 左小腿传感器 → 3D 模型左小腿骨骼
+        "Bip01 L Calf",
+        // 索引 7: 右大腿传感器 → 3D 模型右大腿骨骼
+        "Bip01 R Thigh",
+        // 索引 8: 右小腿传感器 → 3D 模型右小腿骨骼
+        "Bip01 R Calf"
+    };
+
+    [Header("角色根节点")]
+    [Tooltip("Unity 场景中角色最顶层 GameObject 的名称，用于查找角色根 Transform")]
+    public string avatarRootName = "renwu";
+
+    // ═══════════════════════════════════════════════════════════════
+    //  串口通信
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("串口默认值")]
+    [Tooltip("默认串口名称（如 COM9、/dev/ttyUSB0），程序启动时自动尝试匹配")]
+    public string defaultPort = "COM9";
+
+    [Tooltip("默认波特率，需与 IMU 硬件发送端一致")]
+    public int defaultBaud = 115200;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  角度限制
+    //  每个骨骼的局部旋转限制（度），按 (X, Y, Z) 轴指定最小/最大值。
+    //  用于防止手臂穿模、膝盖反弯等不自然姿态。
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("角度限制（每骨骼 XYZ）")]
+    [Tooltip("每个骨骼各轴允许的最小角度（度），索引顺序与 boneNames 一致")]
+    public Vector3[] minLocalAngles = new Vector3[]
+    {
+        new Vector3(-60, -60, -60),   // [0] 左上臂：肩关节，三轴均 ±60°
+        new Vector3(  0, -30, -45),   // [1] 左前臂：肘只能弯不能反弯，所以 X 最小 0°
+        new Vector3(-60, -60, -60),   // [2] 右上臂：同左上臂
+        new Vector3(  0, -30, -45),   // [3] 右前臂：同左前臂
+        new Vector3(-30, -30, -30),   // [4] 脊柱：适度限制躯干扭转
+        new Vector3(-50, -40, -40),   // [5] 左大腿：髋关节
+        new Vector3(-40, -30, -30),   // [6] 左小腿：膝关节
+        new Vector3(-50, -40, -40),   // [7] 右大腿：同左大腿
+        new Vector3(-40, -30, -30)    // [8] 右小腿：同左小腿
+    };
+
+    [Tooltip("每个骨骼各轴允许的最大角度（度），索引顺序与 boneNames 一致")]
+    public Vector3[] maxLocalAngles = new Vector3[]
+    {
+        new Vector3( 60,  60,  60),   // [0] 左上臂
+        new Vector3(145,  30,  45),   // [1] 左前臂：肘屈伸最大约 145°
+        new Vector3( 60,  60,  60),   // [2] 右上臂
+        new Vector3(145,  30,  45),   // [3] 右前臂
+        new Vector3( 30,  30,  30),   // [4] 脊柱
+        new Vector3( 50,  40,  40),   // [5] 左大腿
+        new Vector3( 40,  30,  30),   // [6] 左小腿
+        new Vector3( 50,  40,  40),   // [7] 右大腿
+        new Vector3( 40,  30,  30)    // [8] 右小腿
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    //  异常检测
+    //  通过分析最近几帧的角度变化量，过滤传感器突变/脉冲干扰。
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("异常检测")]
+    [Tooltip("是否启用异常帧过滤（建议开启）")]
+    public bool anomalyEnable = true;
+
+    [Tooltip("异常检测的滑动窗口大小：保留最近多少帧用于对比分析")]
+    public int anomalyBufferSize = 10;
+
+    [Tooltip("单帧角度跳变阈值（度）：超过此值的帧被视为异常并丢弃")]
+    public float anomalyThreshold = 45f;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  稳定性检测
+    //  开始驱动前，确认传感器数据已稳定（穿戴者保持静止）。
+    //  避免在抖动/校准未完成时进入驱动状态导致姿态跳变。
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("稳定性")]
+    [Tooltip("连续多少帧角速度低于阈值才算稳定")]
+    public int requiredStableFrames = 20;
+
+    [Tooltip("每帧允许的最大角速度（度/帧），低于此值视为该设备稳定")]
+    public float maxAngularSpeedDeg = 3f;
+
+    [Tooltip("是否要求所有 9 个传感器都稳定才允许开始（严格模式）")]
+    public bool requireAllDevices = false;
+
+    [Tooltip("宽松模式下至少需要多少个设备稳定才允许开始")]
+    public int minStableDevices = 1;
+
+    [Tooltip("若某个骨骼在场景中未找到对应 GameObject，是否在稳定性判断中忽略它")]
+    public bool ignoreBonesWithoutObject = true;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  旋转驱动参数
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("驱动")]
+    [Tooltip("Slerp 平滑插值速度因子：值越大动作越灵敏、越小越平滑（建议 5-15）")]
+    public float smoothSpeed = 10f;
+
+    [Tooltip("去抖阈值（度）：旋转变化小于此值时不更新目标，避免静止时微抖")]
+    public float debounceThresholdDeg = 5f;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  根节点位移补偿
+    //  IMU 只能测量旋转，不能测量位移。下蹲时如果不补偿根节点高度，
+    //  角色会悬浮在半空中只做腿部弯曲动作。此功能通过读取足部骨骼
+    //  的世界坐标反算根节点应下沉的高度，使脚部始终贴地。
+    // ═══════════════════════════════════════════════════════════════
+
+    [Header("根节点位移补偿")]
+    [Tooltip("启用后下蹲等动作时角色会自动下沉，脚部保持贴地")]
+    public bool rootMotionEnabled = true;
+
+    [Tooltip("左脚骨骼名称（通常为 Calf 的子节点），用于计算脚踝高度")]
+    public string leftFootBoneName = "Bip01 L Foot";
+
+    [Tooltip("右脚骨骼名称")]
+    public string rightFootBoneName = "Bip01 R Foot";
+
+    [Tooltip("补偿平滑速度，越大响应越快，越小过渡越柔和")]
+    public float rootMotionSmoothSpeed = 8f;
+
+    [Tooltip("根节点最大下沉距离（米），防止异常数据导致角色钻入地下")]
+    public float rootMotionMaxDrop = 1.5f;
+
+    [Tooltip("启用后下蹲等动作时角色根节点会随足部水平偏移，保持重心自然")]
+    public bool rootMotionHorizontalEnabled = true;
+
+    [Tooltip("水平补偿平滑速度，越大响应越快，越小过渡越柔和")]
+    public float rootMotionHorizontalSmoothSpeed = 6f;
+
+    [Tooltip("根节点最大水平偏移距离（米），过大会与脊柱旋转冲突导致上半身扭曲")]
+    public float rootMotionMaxHorizontalOffset = 0.3f;
+
+    // ═══════════════════════════════════════════════════════════════
+    //  校验
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 运行时校验配置合法性。
+    /// 在 Awake 阶段由 MotionCaptureController 调用，
+    /// 若 boneNames 长度与 deviceCount 不匹配则自动修正并输出警告。
+    /// </summary>
+    public void Validate()
+    {
+        if (boneNames == null || boneNames.Length != deviceCount)
+        {
+            Debug.LogWarning($"[MotionCaptureConfig] boneNames 长度({boneNames?.Length}) != deviceCount({deviceCount})，已重置为默认值");
+            boneNames = new string[]
+            {
+                "Bip01 L UpperArm", "Bip01 L Forearm",
+                "Bip01 R UpperArm", "Bip01 R Forearm",
+                "Bip01 Spine2",
+                "Bip01 L Thigh", "Bip01 L Calf",
+                "Bip01 R Thigh", "Bip01 R Calf"
+            };
+        }
+    }
+}
+
+
+
