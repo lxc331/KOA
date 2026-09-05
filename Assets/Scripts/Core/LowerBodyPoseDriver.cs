@@ -132,6 +132,40 @@ public sealed class LowerBodyPoseDriver
         }
     }
 
+    /// <summary>
+    /// 读取标定后的实测角度，供游戏判定使用。沿用当前左右腿方向约定，
+    /// 不使用显示增益、限幅、失联保持值或另一条腿的回退值。
+    /// </summary>
+    public bool TryMeasureLeg(int leg, Quaternion[] sensorRotations,
+        out float thighAngle, out float kneeAngle)
+    {
+        thighAngle = kneeAngle = 0f;
+        if (!geometryReady || leg < 0 || leg > 1 || sensorRotations == null ||
+            sensorRotations.Length <= RightCalfIndex)
+            return false;
+
+        int thighIndex = leg == 0 ? LeftThighIndex : RightThighIndex;
+        int calfIndex = thighIndex + 1;
+        if (!calibrated[thighIndex - FirstIndex] || !calibrated[calfIndex - FirstIndex])
+            return false;
+
+        // 横向接近水平时，矢状投影退化，不能把它当成伸直的 0 度。
+        Vector3 thighDirection = Quaternion.Inverse(avatarFacing) *
+            GetMeasuredSegmentDirection(thighIndex, thighIndex - FirstIndex, sensorRotations);
+        Vector3 calfDirection = Quaternion.Inverse(avatarFacing) *
+            GetMeasuredSegmentDirection(calfIndex, calfIndex - FirstIndex, sensorRotations);
+        if (thighDirection.y * thighDirection.y + thighDirection.z * thighDirection.z < 0.01f ||
+            calfDirection.y * calfDirection.y + calfDirection.z * calfDirection.z < 0.01f)
+            return false;
+
+        thighAngle = GetSagittalFlexion(thighIndex, thighIndex - FirstIndex, sensorRotations);
+        float calfAngle = GetSagittalFlexion(calfIndex, calfIndex - FirstIndex, sensorRotations);
+        if (leg == 1) calfAngle = -calfAngle;
+        kneeAngle = Mathf.Abs(Mathf.DeltaAngle(thighAngle, calfAngle));
+        return !float.IsNaN(thighAngle) && !float.IsInfinity(thighAngle) &&
+            !float.IsNaN(kneeAngle) && !float.IsInfinity(kneeAngle);
+    }
+
     private void PrepareGeometry(
         GameObject[] sourceBones,
         Quaternion[] restRotations,

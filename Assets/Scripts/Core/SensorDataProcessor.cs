@@ -48,6 +48,67 @@ public class SensorDataProcessor
     public int LastSyncDevicesApplied { get; private set; }
     public float LastSyncSkewMilliseconds { get; private set; } = -1f;
     public string LastSyncStatus { get; private set; } = "not_started";
+    public int CalibrationVersion { get; private set; }
+
+    /// <summary>只读采样：游戏独立检查真实收帧时间，不改变现有骨骼驱动行为。</summary>
+    public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
+        float now, float timeoutSeconds, float maxSkewSeconds)
+    {
+        var sample = new RehabPhotoGame.LowerBodyMeasurement
+        {
+            CalibrationVersion = CalibrationVersion,
+            SampleTimeSeconds = -1f,
+            FailureReason = "等待 06～09 数据"
+        };
+        if (!HasCompleteLowerBodyLayout()) return sample;
+
+        float oldest = float.PositiveInfinity;
+        float newest = float.NegativeInfinity;
+        bool quaternionsValid = true;
+        for (int i = LowerBodyFirstIndex; i <= LowerBodyLastIndex; i++)
+        {
+            float receivedAt = lastFrameRealtimeSeconds[i];
+            float age = now - receivedAt;
+            if (receivedFrameCounts[i] > 0 && age >= 0f && age <= timeoutSeconds)
+                sample.FreshMask |= 1 << (i - LowerBodyFirstIndex);
+            oldest = Mathf.Min(oldest, receivedAt);
+            newest = Mathf.Max(newest, receivedAt);
+            Quaternion q = rawQuaternions[i];
+            float normSquared = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+            quaternionsValid &= !float.IsNaN(normSquared) && !float.IsInfinity(normSquared) &&
+                normSquared >= 0.25f && normSquared <= 2.25f;
+        }
+        // 只有四个设备的最旧接收时刻前进，保持计时才允许前进。
+        sample.SampleTimeSeconds = float.IsInfinity(oldest) ? -1f : oldest;
+        if (sample.FreshMask != 15)
+        {
+            sample.FailureReason = "传感器缺失或超时；当前动作已中止";
+            return sample;
+        }
+        if (newest - oldest > maxSkewSeconds)
+        {
+            sample.FailureReason = "四传感器时间差过大";
+            return sample;
+        }
+        if (!quaternionsValid)
+        {
+            sample.FailureReason = "四元数无效";
+            return sample;
+        }
+        if (!Driver.IsCalibrated ||
+            !lowerBodyPoseDriver.TryMeasureLeg(0, transformedQuaternions,
+                out sample.LeftThighDeg, out sample.LeftKneeDeg) ||
+            !lowerBodyPoseDriver.TryMeasureLeg(1, transformedQuaternions,
+                out sample.RightThighDeg, out sample.RightKneeDeg))
+        {
+            sample.LeftThighDeg = sample.LeftKneeDeg = sample.RightThighDeg = sample.RightKneeDeg = 0f;
+            sample.FailureReason = "请先完成站姿标定并开始动捕驱动";
+            return sample;
+        }
+        sample.IsValid = true;
+        sample.FailureReason = "";
+        return sample;
+    }
 
     public SensorDataProcessor(MotionCaptureConfig config)
     {
@@ -205,6 +266,7 @@ public class SensorDataProcessor
             state);
 
         LastSyncStatus = "calibrated";
+        CalibrationVersion++;
     }
 
     public void SyncAndUpdateTargets(
@@ -362,6 +424,7 @@ public class SensorDataProcessor
 
     public void Reset(GameObject[] bones, Quaternion[] restLocalRotations)
     {
+        CalibrationVersion++;
         for (int i = 0; i < deviceCount; i++)
         {
             rawQuaternions[i] = Quaternion.identity;

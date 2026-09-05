@@ -108,6 +108,28 @@ public class MotionCaptureController : MonoBehaviour
     /// <summary>获取当前日志导出目录路径（UI 文本框显示用）</summary>
     public string GetExportDirectory() => logger?.GetExportDirectory() ?? "";
 
+    /// <summary>游戏只读入口；未连接、未驱动时不向游戏提供可判定的姿态。</summary>
+    public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
+        float timeoutSeconds, float maxSkewSeconds)
+    {
+        var sample = processor != null
+            ? processor.ReadLowerBodyMeasurement(Time.realtimeSinceStartup, timeoutSeconds, maxSkewSeconds)
+            : new RehabPhotoGame.LowerBodyMeasurement();
+        if (!isActiveAndEnabled || State == null || Serial == null || !Serial.IsConnected ||
+            !State.IsDriving || !State.IsCalibrated)
+        {
+            sample.IsValid = false;
+            sample.FailureReason = "等待串口连接、四传感器站姿标定及开始驱动";
+        }
+        return sample;
+    }
+
+    /// <summary>游戏阶段事件进入既有 JSONL 文件，不写入屏幕日志。</summary>
+    public void LogGameDiagnostic(string eventName, string detail)
+    {
+        logger?.LogEvent("knee_extension_" + eventName, detail);
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  Unity 生命周期
     // ═══════════════════════════════════════════════════════════════
@@ -555,7 +577,6 @@ public class MotionCaptureController : MonoBehaviour
         return go.transform.GetChild(0);    // 取第一个子节点
     }
 }
-
 
 
 
