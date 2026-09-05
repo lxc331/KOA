@@ -56,11 +56,24 @@ MonoBehaviour:
   ignoreBonesWithoutObject: 1
   smoothSpeed: 10
   debounceThresholdDeg: 5
+  rightThighInvertLateral: 1
+  rightThighMaxTwistDeg: 12
+  rightThighMaxSwingDeg: 110
+  rightKneeHingeAxisLocal: {x: 0, y: 0, z: 1}
+  rightKneeNeutralDeadZoneDeg: 3
+  rightLegInputFreshnessSeconds: 1.2
+  rightLegReturnToNeutralSpeed: 8
+  lowerBodyThighMaxFlexionDeg: 115
+  lowerBodyThighMaxExtensionDeg: 30
+  lowerBodyKneeMaxFlexionDeg: 135
+  lowerBodyKneeNeutralDeadZoneDeg: 2
+  lowerBodyKneeHingeAxisLocal: {x: 0, y: 0, z: 1}
+  lowerBodyKneeFlexionSign: 1
   rootMotionEnabled: 1
   leftFootBoneName: Bip01 L Foot
   rightFootBoneName: Bip01 R Foot
   rootMotionSmoothSpeed: 8
   rootMotionMaxDrop: 1.5
-  rootMotionHorizontalEnabled: 1
+  rootMotionHorizontalEnabled: 0
   rootMotionHorizontalSmoothSpeed: 6
   rootMotionMaxHorizontalOffset: 0.3

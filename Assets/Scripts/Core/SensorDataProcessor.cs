@@ -2,90 +2,58 @@ using System;
 using UnityEngine;
 
 /// <summary>
-/// 传感器数据处理流水线（纯逻辑类，不继承 MonoBehaviour）。
-/// 
-/// 整体流程（由 Controller 在 Update/LateUpdate 中按顺序调用）：
-///   阶段 1 — DequeueAll:          从 SerialParser 的线程安全队列中取出所有新帧
-///   阶段 2 — TransformAll:        将传感器坐标系四元数转换为 Unity Avatar 空间
-///   阶段 3 — UpdateStability:     统计每个设备的角速度，更新稳定性计数器
-///   阶段 4 — TryPreCalibrate:     首次收到数据后自动执行一次校准（记录初始偏差）
-///   阶段 5 — SyncAndUpdateTargets: 帧同步 + 时间插值 + 设置 RotationDriver 目标
-///   阶段 6 — ApplyToBones:        (LateUpdate) 将目标旋转写入骨骼 localRotation
-/// 
-/// 外部依赖（需在项目中已存在）：
-///   - SerialParser:       协议解析 + 帧队列
-///   - RotationDriver:     旋转校准、平滑插值、角度限制、姿态应用
-///   - StabilityMonitor:   设备角速度跟踪与系统稳定性判定
+/// 传感器数据处理流水线：出队、坐标转换、稳定性判断、标定、帧同步和骨骼驱动。
+/// 当前下肢测试阶段要求 06-09（左大腿、左小腿、右大腿、右小腿）
+/// 四个传感器都持续收到数据且稳定后，才允许建立零位并开始驱动。
 /// </summary>
 public class SensorDataProcessor
 {
-    // ═══════════════════════════════════════════════════════════════
-    //  字段
-    // ═══════════════════════════════════════════════════════════════
+    private const int LowerBodyFirstIndex = LowerBodyPoseDriver.LeftThighIndex;
+    private const int LowerBodyLastIndex = LowerBodyPoseDriver.RightCalfIndex;
+    private const int MinimumCalibrationFramesPerDevice = 3;
+    private const float CalibrationFreshnessSeconds = 2.5f;
 
-    private readonly int deviceCount;                    // 传感器设备总数
-    private readonly MotionCaptureConfig config;         // 全局配置引用
+    private readonly int deviceCount;
+    private readonly MotionCaptureConfig config;
 
-    // 每个设备的原始四元数（直接从串口解析得到）
     private readonly Quaternion[] rawQuaternions;
-
-    // 经坐标系转换后的四元数（传感器空间 → Unity Avatar 空间）
     private readonly Quaternion[] transformedQuaternions;
-
-    // 每个设备的欧拉角分量（从原始四元数直接计算，用于日志和 UI 显示）
     private readonly float[] yaw, pitch, roll;
 
-    // 帧同步阶段的复用缓存数组（避免每帧 new，减少 GC 压力）
     private readonly SerialParser.SensorFrame[] latestFrames;
     private readonly bool[] hasLatest;
+    private readonly bool[] inputFresh;
 
-    // 稳定性监控器：跟踪每个设备的角速度是否连续低于阈值
+    // 用 Unity 实时时钟记录每个设备最近一次真正出队的时间。
+    // StabilityMonitor 是按 Unity 帧更新的，仅看 StableCount 会把“只有一帧旧数据”
+    // 误判为稳定，因此标定前还必须检查真实接收帧数和新鲜度。
+    private readonly float[] lastFrameRealtimeSeconds;
+    private readonly int[] receivedFrameCounts;
+
     private StabilityMonitor stabilityMonitor;
 
-    // 旋转驱动器：负责校准、插值、限幅、最终姿态写入
     public RotationDriver Driver { get; private set; }
+    private readonly LowerBodyPoseDriver lowerBodyPoseDriver;
 
-    // 角色根节点在 T-Pose 时的世界旋转，用于将传感器坐标补偿到角色朝向
+    private Quaternion[] restLocalRotations;
     private Quaternion rootFacingOffset = Quaternion.identity;
 
-    /// <summary>供外部读取的转换后四元数数组（UI 遥测表格使用）</summary>
     public Quaternion[] TransformedQuaternions => transformedQuaternions;
-
-    /// <summary>供诊断日志读取的传感器原始四元数。</summary>
     public Quaternion[] RawQuaternions => rawQuaternions;
-
-    /// <summary>供诊断日志读取的逐设备稳定计数。</summary>
     public int[] StableCounts => stabilityMonitor != null
         ? stabilityMonitor.StableCounts
         : Array.Empty<int>();
 
-    /// <summary>最近一次驱动同步时有最新帧的设备数。</summary>
     public int LastSyncLatestCount { get; private set; }
-
-    /// <summary>最近一次驱动同步时实际送入驱动器的设备数。</summary>
     public int LastSyncDevicesApplied { get; private set; }
-
-    /// <summary>最近一次同步中最早与最晚设备帧的时间差（毫秒）。</summary>
     public float LastSyncSkewMilliseconds { get; private set; } = -1f;
-
-    /// <summary>最近一次同步结果，供日志直接定位未驱动原因。</summary>
     public string LastSyncStatus { get; private set; } = "not_started";
 
-    // ═══════════════════════════════════════════════════════════════
-    //  构造
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 初始化数据处理器。
-    /// 分配所有内部数组，创建 StabilityMonitor 和 RotationDriver。
-    /// </summary>
-    /// <param name="config">全局配置资产</param>
     public SensorDataProcessor(MotionCaptureConfig config)
     {
         this.config = config;
         deviceCount = config.deviceCount;
 
-        // 分配所有 per-device 数组
         rawQuaternions = new Quaternion[deviceCount];
         transformedQuaternions = new Quaternion[deviceCount];
         yaw = new float[deviceCount];
@@ -93,203 +61,169 @@ public class SensorDataProcessor
         roll = new float[deviceCount];
         latestFrames = new SerialParser.SensorFrame[deviceCount];
         hasLatest = new bool[deviceCount];
+        inputFresh = new bool[deviceCount];
+        lastFrameRealtimeSeconds = new float[deviceCount];
+        receivedFrameCounts = new int[deviceCount];
 
-        // 初始化为 identity，避免初始值 (0,0,0,0) 导致除零或异常
         for (int i = 0; i < deviceCount; i++)
         {
             rawQuaternions[i] = Quaternion.identity;
             transformedQuaternions[i] = Quaternion.identity;
+            lastFrameRealtimeSeconds[i] = float.NegativeInfinity;
+            receivedFrameCounts[i] = 0;
         }
 
-        // 创建稳定性监控器和旋转驱动器
         stabilityMonitor = new StabilityMonitor(deviceCount);
-        // 参数：设备数、开启平滑、平滑速度、去抖阈值、初始关闭 Twist+Swing（使用 Euler 模式）
-        Driver = new RotationDriver(deviceCount, true, config.smoothSpeed, config.debounceThresholdDeg, false);
+        Driver = new RotationDriver(
+            deviceCount, true, config.smoothSpeed, config.debounceThresholdDeg, false);
+        lowerBodyPoseDriver = new LowerBodyPoseDriver(config);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  初始化 API
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 设置角色根节点的初始朝向补偿。
-    /// 传感器坐标转换到 Unity 空间后，还需要乘以角色在场景中的初始朝向，
-    /// 否则角色面朝 Z+ 而传感器面朝其它方向时姿态会偏。
-    /// </summary>
     public void SetRootFacingOffset(Quaternion offset) => rootFacingOffset = offset;
 
-    /// <summary>
-    /// 将角度限制和绑定姿态（T-Pose localRotation）传入 RotationDriver。
-    /// 这些数据在运行期不变，仅初始化时设置一次。
-    /// </summary>
     public void InitConstraints(Quaternion[] restLocalRotations)
     {
-        Driver.SetConstraints(config.minLocalAngles, config.maxLocalAngles, restLocalRotations);
+        this.restLocalRotations = restLocalRotations != null
+            ? (Quaternion[])restLocalRotations.Clone()
+            : null;
+        Driver.SetConstraints(
+            config.minLocalAngles, config.maxLocalAngles, restLocalRotations);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  阶段 1：出队
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 从 SerialParser 的线程安全队列中一次性取出所有可用帧。
-    /// 
-    /// SerialParser 在后台线程中持续将串口字节流解析为 (deviceId, Quaternion)，
-    /// 并推入队列。此方法在 Unity 主线程的 Update() 开头调用，
-    /// 确保后续所有操作都在主线程执行（Transform 操作要求）。
-    /// 
-    /// 对于每个出队的帧：
-    ///   1. 缓存原始四元数
-    ///   2. 提取欧拉角分量（用于日志和 UI）
-    ///   3. 标记该设备已有数据
-    ///   4. 通过回调通知外部（Controller 用它写日志）
-    /// </summary>
-    /// <param name="parser">串口协议解析器</param>
-    /// <param name="state">全局状态容器</param>
-    /// <param name="onFrame">每个帧的回调：(设备ID, 四元数, 欧拉角)，可为 null</param>
-    /// <returns>本次出队的帧数</returns>
-    public int DequeueAll(SerialParser parser, MotionCaptureState state, Action<int, Quaternion, Vector3> onFrame)
+    public int DequeueAll(
+        SerialParser parser,
+        MotionCaptureState state,
+        Action<int, Quaternion, Vector3> onFrame)
     {
         int count = 0;
         int deviceId;
         Quaternion q;
 
-        // 循环出队直到队列为空
         while (parser.TryDequeue(out deviceId, out q))
         {
-            if (deviceId < 0 || deviceId >= deviceCount) continue;  // 丢弃非法 ID
+            if (deviceId < 0 || deviceId >= deviceCount)
+                continue;
 
-            // 缓存原始四元数
             rawQuaternions[deviceId] = q;
 
-            // 从四元数提取欧拉角分量
-            // Unity 的 eulerAngles 返回 (x=pitch, y=yaw, z=roll)
-            // 这里按硬件约定重新映射为 (yaw=z, pitch=y, roll=x)
             var e = q.eulerAngles;
             yaw[deviceId] = e.z;
             pitch[deviceId] = e.y;
             roll[deviceId] = e.x;
 
-            // 标记该设备已收到数据 & 通知 UI 层欧拉角更新
             state.SetDeviceHasData(deviceId, true);
-            state.NotifyEulerUpdated(deviceId, new Vector3(roll[deviceId], pitch[deviceId], yaw[deviceId]));
+            state.NotifyEulerUpdated(
+                deviceId,
+                new Vector3(roll[deviceId], pitch[deviceId], yaw[deviceId]));
 
-            // 回调：Controller 用这个写遥测日志
+            lastFrameRealtimeSeconds[deviceId] = Time.realtimeSinceStartup;
+            receivedFrameCounts[deviceId]++;
+
             onFrame?.Invoke(deviceId, q, e);
             count++;
         }
+
         return count;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  阶段 2：坐标系转换
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 将所有已收到数据的设备的原始四元数从传感器坐标系转换到 Unity Avatar 空间。
-    /// 
-    /// 转换过程：
-    ///   1. RotationDriver.MapSensorToUnity(index, raw) — 按关节类型执行轴重映射
-    ///   2. rootFacingOffset * unityQ — 叠加角色初始朝向补偿
-    /// 
-    /// 未收到数据的设备保持 identity（不影响骨骼）。
-    /// </summary>
     public void TransformAll(MotionCaptureState state)
     {
         for (int i = 0; i < deviceCount; i++)
         {
             if (!state.GetDeviceHasData(i))
             {
-                // 该设备尚未收到任何数据，保持 identity
                 transformedQuaternions[i] = Quaternion.identity;
                 continue;
             }
-            // 坐标系转换：传感器 → Unity → 角色朝向补偿
-            transformedQuaternions[i] = MapSensorToAvatarSpace(i, rawQuaternions[i]);
-            // 同步到状态容器，供外部查询
+
+            transformedQuaternions[i] =
+                MapSensorToAvatarSpace(i, rawQuaternions[i]);
             state.SetDeviceQuaternion(i, transformedQuaternions[i]);
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  阶段 3：稳定性监控
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 更新每个设备的稳定性计数器。
-    /// StabilityMonitor 内部跟踪每个设备帧间的角度变化量，
-    /// 如果连续 N 帧都低于阈值，则该设备被标记为稳定。
-    /// </summary>
     public void UpdateStability(MotionCaptureState state)
     {
         for (int i = 0; i < deviceCount; i++)
-            stabilityMonitor.UpdateDevice(i, transformedQuaternions[i],
-                state.GetDeviceHasData(i), config.maxAngularSpeedDeg);
+        {
+            stabilityMonitor.UpdateDevice(
+                i,
+                transformedQuaternions[i],
+                state.GetDeviceHasData(i),
+                config.maxAngularSpeedDeg);
+        }
     }
 
     /// <summary>
-    /// 综合判断系统整体稳定性（是否满足开始驱动的条件）。
-    /// 根据配置可以要求全部设备稳定或仅部分设备稳定。
+    /// 下肢测试阶段把“稳定”定义为 06-09 四个设备同时满足：
+    /// 1) 已收到数据；2) 至少收到 3 个真实数据帧；
+    /// 3) 最近 2.5 秒内仍有新帧；4) StabilityMonitor 达到稳定帧阈值。
+    /// 这样不会再出现 06 刚上线就提前预标定、07/09 后到再各自补标定的情况。
     /// </summary>
     public bool CheckStability(GameObject[] bones, bool[] deviceHasData)
     {
+        if (HasCompleteLowerBodyLayout())
+            return AreLowerBodySensorsReady(deviceHasData);
+
         return stabilityMonitor.IsSystemStable(
-            bones, config.ignoreBonesWithoutObject, deviceHasData,
-            config.requiredStableFrames, config.requireAllDevices, config.minStableDevices);
+            bones,
+            config.ignoreBonesWithoutObject,
+            deviceHasData,
+            config.requiredStableFrames,
+            config.requireAllDevices,
+            config.minStableDevices);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  阶段 4：预校准
-    // ═══════════════════════════════════════════════════════════════
-
-    /// <summary>
-    /// 在首次收到数据后自动执行一次校准。
-    /// 校准过程：记录每个传感器当前旋转与对应骨骼初始旋转之间的偏差，
-    /// 后续驱动时用这个偏差做"零点"补偿。
-    /// 仅在尚未校准时执行，调用后 Driver.IsCalibrated 变为 true。
-    /// </summary>
-    public void TryPreCalibrate(GameObject[] bones)
+    public void TryPreCalibrate(GameObject[] bones, MotionCaptureState state)
     {
-        if (Driver.IsCalibrated) return;   // 已校准则跳过
-        Driver.Calibrate(bones, transformedQuaternions);
+        if (Driver.IsCalibrated)
+            return;
+
+        Calibrate(bones, state);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  阶段 5：帧同步 + 插值 + 更新目标
-    // ═══════════════════════════════════════════════════════════════
-
     /// <summary>
-    /// 获取所有设备的最新帧，对齐到统一时间戳，并将目标旋转推送给 RotationDriver。
-    /// 
-    /// 为什么需要帧同步？
-    ///   9 个传感器通过同一串口依次发送数据，到达时间有微小差异。
-    ///   直接使用各自的最新帧会导致不同关节处于不同时刻的姿态，
-    ///   引起轻微但可见的"时间撕裂"。
-    /// 
-    /// 同步策略：
-    ///   1. 取所有设备最新帧中最晚的时间戳作为目标时间 (targetTime)
-    ///   2. 对于时间戳不等于 targetTime 的设备，尝试在其帧历史中进行球面插值
-    ///   3. 插值失败则回退使用该设备的最新帧
-    ///   4. 若某设备完全没有最新帧，根据 requireAllDevices 决定是跳过还是用旧数据
+    /// 建立零位。06-09 未全部稳定、未连续收到真实数据时直接拒绝标定。
     /// </summary>
-    /// <param name="parser">解析器（用于获取帧历史和插值）</param>
-    /// <param name="state">状态容器</param>
-    /// <param name="bones">骨骼 GameObject 数组</param>
-    /// <param name="requireAllDevices">是否要求所有设备都有数据才进行驱动</param>
-    public void SyncAndUpdateTargets(SerialParser parser, MotionCaptureState state,
-        GameObject[] bones, bool requireAllDevices)
+    public void Calibrate(GameObject[] bones, MotionCaptureState state)
+    {
+        if (HasCompleteLowerBodyLayout() &&
+            !AreLowerBodySensorsReady(state?.GetDeviceHasDataArray()))
+        {
+            LastSyncStatus = "waiting_lower_body_calibration";
+            return;
+        }
+
+        Driver.Calibrate(bones, transformedQuaternions);
+
+        lowerBodyPoseDriver.Reset();
+        lowerBodyPoseDriver.TryCalibrate(
+            transformedQuaternions,
+            bones,
+            restLocalRotations,
+            rootFacingOffset,
+            state);
+
+        LastSyncStatus = "calibrated";
+    }
+
+    public void SyncAndUpdateTargets(
+        SerialParser parser,
+        MotionCaptureState state,
+        GameObject[] bones,
+        bool requireAllDevices)
     {
         LastSyncLatestCount = 0;
         LastSyncDevicesApplied = 0;
         LastSyncSkewMilliseconds = -1f;
         LastSyncStatus = "collecting";
 
-        // ── 第 1 步：收集所有设备的最新帧 ──
         DateTime? newestTime = null;
         DateTime? oldestTime = null;
         int latestCount = 0;
 
-        for (int i = 0; i < deviceCount; i++) hasLatest[i] = false;
+        for (int i = 0; i < deviceCount; i++)
+            hasLatest[i] = false;
 
         for (int i = 0; i < deviceCount; i++)
         {
@@ -297,140 +231,223 @@ public class SensorDataProcessor
             {
                 hasLatest[i] = true;
                 latestCount++;
-                // 追踪最新和最旧时间戳，用于确定同步目标时间
-                if (!newestTime.HasValue || latestFrames[i].Timestamp > newestTime.Value)
+
+                if (!newestTime.HasValue ||
+                    latestFrames[i].Timestamp > newestTime.Value)
                     newestTime = latestFrames[i].Timestamp;
-                if (!oldestTime.HasValue || latestFrames[i].Timestamp < oldestTime.Value)
+
+                if (!oldestTime.HasValue ||
+                    latestFrames[i].Timestamp < oldestTime.Value)
                     oldestTime = latestFrames[i].Timestamp;
             }
         }
 
         LastSyncLatestCount = latestCount;
         if (newestTime.HasValue && oldestTime.HasValue)
-            LastSyncSkewMilliseconds = (float)(newestTime.Value - oldestTime.Value).TotalMilliseconds;
+        {
+            LastSyncSkewMilliseconds =
+                (float)(newestTime.Value - oldestTime.Value).TotalMilliseconds;
+        }
 
-        // 没有任何设备有最新帧，无法驱动
         if (latestCount == 0 || !newestTime.HasValue)
         {
             LastSyncStatus = "no_latest_frames";
             return;
         }
 
-        // ── 第 2 步：以最晚时间戳为目标，逐设备对齐 ──
         DateTime targetTime = newestTime.Value;
         int devicesApplied = 0;
+
+        // 之前使用 5 秒会让已经停更的 09 姿态保留过久。
+        // 这里收紧到至少 2.5 秒，仍明显大于当前约 0.5 秒的典型接收间隔。
+        float freshnessSeconds =
+            Mathf.Max(CalibrationFreshnessSeconds, config.rightLegInputFreshnessSeconds);
+
+        for (int i = 0; i < deviceCount; i++)
+        {
+            inputFresh[i] = hasLatest[i] &&
+                (targetTime - latestFrames[i].Timestamp).TotalSeconds <=
+                freshnessSeconds;
+        }
 
         for (int i = 0; i < deviceCount; i++)
         {
             if (!hasLatest[i])
             {
-                // 该设备没有最新帧
                 if (requireAllDevices)
                 {
-                    LastSyncStatus = $"missing_required_device_{i + 1:00}";
-                    return;   // 严格模式：缺一不可，放弃本次驱动
+                    LastSyncStatus =
+                        $"missing_required_device_{i + 1:00}";
+                    return;
                 }
 
-                // 宽松模式：该设备之前收到过数据则沿用旧值
                 if (state.GetDeviceHasData(i))
                 {
-                    transformedQuaternions[i] = MapSensorToAvatarSpace(i, rawQuaternions[i]);
+                    transformedQuaternions[i] =
+                        MapSensorToAvatarSpace(i, rawQuaternions[i]);
                     devicesApplied++;
                 }
+
                 continue;
             }
 
             SerialParser.SensorFrame frame = latestFrames[i];
+
             if (frame.Timestamp != targetTime)
             {
-                // 该设备的最新帧时间与目标不一致，尝试插值到 targetTime
                 if (!parser.TryGetInterpolatedFrame(i, targetTime, out frame))
-                    frame = latestFrames[i];   // 插值失败，回退使用最新帧
+                    frame = latestFrames[i];
             }
-            // 坐标系转换并更新
-            transformedQuaternions[i] = MapSensorToAvatarSpace(i, frame.Q);
+
+            transformedQuaternions[i] =
+                MapSensorToAvatarSpace(i, frame.Q);
             devicesApplied++;
         }
 
         LastSyncDevicesApplied = devicesApplied;
 
-        // 没有任何设备成功对齐，跳过
         if (devicesApplied == 0)
         {
             LastSyncStatus = "no_devices_applied";
             return;
         }
 
-        // ── 第 3 步：确保已校准，然后推送目标给 RotationDriver ──
+        // 用户可以提前按“开始”，但真正的姿态驱动必须等 06-09
+        // 全部在线、连续收到真实帧且稳定后再建立一次统一零位。
         if (!Driver.IsCalibrated)
-            Driver.Calibrate(bones, transformedQuaternions);
+        {
+            if (HasCompleteLowerBodyLayout() &&
+                !AreLowerBodySensorsReady(state.GetDeviceHasDataArray()))
+            {
+                LastSyncStatus = "waiting_lower_body_calibration";
+                return;
+            }
 
-        // 将 9 个设备的目标四元数一次性推送给驱动器
-        // 驱动器内部会在 Apply() 时进行平滑插值和限幅
+            Calibrate(bones, state);
+
+            if (!Driver.IsCalibrated)
+            {
+                LastSyncStatus = "waiting_lower_body_calibration";
+                return;
+            }
+        }
+
         Driver.UpdateTargets(transformedQuaternions);
+
+        lowerBodyPoseDriver.TryCalibrate(
+            transformedQuaternions,
+            bones,
+            restLocalRotations,
+            rootFacingOffset,
+            state);
+
+        lowerBodyPoseDriver.ConstrainTargets(
+            transformedQuaternions,
+            Driver.Targets,
+            inputFresh);
+
         LastSyncStatus = "targets_updated";
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  阶段 6：应用到骨骼
-    // ═══════════════════════════════════════════════════════════════
-
     /// <summary>
-    /// 在 LateUpdate 中调用（确保在动画系统之后执行）。
-    /// RotationDriver.Apply() 会将经过平滑插值和限幅处理的旋转
-    /// 写入每个骨骼 GameObject 的 transform.localRotation。
+    /// 未完成统一标定时保持绑定姿态，不把半套传感器数据写入人物骨骼。
     /// </summary>
-    public void ApplyToBones(GameObject[] bones) => Driver.Apply(bones);
+    public void ApplyToBones(GameObject[] bones)
+    {
+        if (!Driver.IsCalibrated)
+            return;
 
-    // ═══════════════════════════════════════════════════════════════
-    //  重置
-    // ═══════════════════════════════════════════════════════════════
+        Driver.Apply(bones);
+    }
 
-    /// <summary>
-    /// 全量重置：清空所有缓存数据，恢复骨骼到绑定姿态（T-Pose），
-    /// 重建稳定性监控器。在用户点击"重置"时由 Controller 调用。
-    /// </summary>
     public void Reset(GameObject[] bones, Quaternion[] restLocalRotations)
     {
         for (int i = 0; i < deviceCount; i++)
         {
             rawQuaternions[i] = Quaternion.identity;
             transformedQuaternions[i] = Quaternion.identity;
+            inputFresh[i] = false;
+            hasLatest[i] = false;
+            lastFrameRealtimeSeconds[i] = float.NegativeInfinity;
+            receivedFrameCounts[i] = 0;
         }
-        // 恢复所有骨骼到初始 localRotation
+
         Driver.ResetToRestPose(bones, restLocalRotations);
-        // 重建稳定性监控器（清空历史角速度数据）
+        lowerBodyPoseDriver.Reset();
         stabilityMonitor = new StabilityMonitor(deviceCount);
+
         LastSyncLatestCount = 0;
         LastSyncDevicesApplied = 0;
         LastSyncSkewMilliseconds = -1f;
         LastSyncStatus = "reset";
     }
 
-    /// <summary>仅重建稳定性监控器（不影响骨骼姿态）</summary>
     public void ResetStabilityMonitor()
     {
         stabilityMonitor = new StabilityMonitor(deviceCount);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  内部工具
-    // ═══════════════════════════════════════════════════════════════
+    private bool HasCompleteLowerBodyLayout()
+    {
+        return deviceCount > LowerBodyLastIndex;
+    }
+
+    private bool AreLowerBodySensorsReady(bool[] deviceHasData)
+    {
+        if (!HasCompleteLowerBodyLayout() ||
+            deviceHasData == null ||
+            deviceHasData.Length <= LowerBodyLastIndex ||
+            stabilityMonitor == null)
+            return false;
+
+        int[] stableCounts = stabilityMonitor.StableCounts;
+        if (stableCounts == null ||
+            stableCounts.Length <= LowerBodyLastIndex)
+            return false;
+
+        float now = Time.realtimeSinceStartup;
+        float oldestReceiveTime = float.PositiveInfinity;
+        float newestReceiveTime = float.NegativeInfinity;
+
+        for (int i = LowerBodyFirstIndex; i <= LowerBodyLastIndex; i++)
+        {
+            if (!deviceHasData[i])
+                return false;
+
+            if (receivedFrameCounts[i] < MinimumCalibrationFramesPerDevice)
+                return false;
+
+            float age = now - lastFrameRealtimeSeconds[i];
+            if (float.IsNaN(age) || float.IsInfinity(age) ||
+                age < 0f || age > CalibrationFreshnessSeconds)
+                return false;
+
+            if (stableCounts[i] < config.requiredStableFrames)
+                return false;
+
+            oldestReceiveTime = Mathf.Min(
+                oldestReceiveTime, lastFrameRealtimeSeconds[i]);
+            newestReceiveTime = Mathf.Max(
+                newestReceiveTime, lastFrameRealtimeSeconds[i]);
+        }
+
+        // 四个设备最近一次真实帧不能相差太久，避免某一只设备停更后
+        // 仍拿旧姿态参与零位标定。
+        return newestReceiveTime - oldestReceiveTime <=
+            CalibrationFreshnessSeconds;
+    }
 
     /// <summary>
     /// 将传感器原始四元数映射到 Unity Avatar 空间。
-    /// 两步转换：
-    ///   1. MapSensorToUnity: 传感器坐标系 → Unity 世界坐标系（轴重映射、手性变换）
-    ///   2. rootFacingOffset *: 叠加角色在场景中的初始朝向
+    /// 2026-09-03 实测日志确认：09 与 06/07/08 应使用同一通用坐标映射。
+    /// 上一版对 09 单独交换 X/Y 并反转 Z，会把正常坐姿约 90°膝角压到约 40°，
+    /// 并使右小腿前踢时膝角反而增大、站起后仍保持大角度弯曲。
     /// </summary>
-    private Quaternion MapSensorToAvatarSpace(int index, Quaternion rawSensorQ)
+    private Quaternion MapSensorToAvatarSpace(
+        int index,
+        Quaternion rawSensorQ)
     {
-        // 第 1 步：传感器坐标系 → Unity 坐标系
-        // MapSensorToUnity 内部根据关节类型（手臂/腿/脊柱）应用不同的轴映射规则
-        var unityQ = RotationDriver.MapSensorToUnity(index, rawSensorQ);
-
-        // 第 2 步：补偿角色在场景中的初始朝向
-        // 例如角色初始面朝 Z-，而传感器假设面朝 Z+，需要乘以角色的初始旋转来修正
+        Quaternion unityQ = RotationDriver.MapSensorToUnity(index, rawSensorQ);
         return rootFacingOffset * unityQ;
     }
 }

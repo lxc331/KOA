@@ -145,6 +145,57 @@ public class MotionCaptureConfig : ScriptableObject
     [Tooltip("去抖阈值（度）：旋转变化小于此值时不更新目标，避免静止时微抖")]
     public float debounceThresholdDeg = 5f;
 
+    [Header("右腿定向约束")]
+    [Tooltip("只反转右大腿相对站姿的内收/外展方向；不会反转前踢、后踢或下蹲方向")]
+    public bool rightThighInvertLateral = true;
+
+    [Tooltip("右大腿绕自身长轴允许的最大扭转角；用于抑制右腿拧转")]
+    [Range(0f, 30f)]
+    public float rightThighMaxTwistDeg = 12f;
+
+    [Tooltip("右大腿偏离站立方向的最大摆角；阻止传感器轴异常时大腿越过180度并连续翻转")]
+    [Range(60f, 140f)]
+    public float rightThighMaxSwingDeg = 110f;
+
+    [Tooltip("右小腿在骨骼局部空间中的膝关节铰链轴；Bip01 小腿沿 Local X 延伸，实际屈膝轴为 Local Z")]
+    public Vector3 rightKneeHingeAxisLocal = Vector3.forward;
+
+    [Tooltip("膝角小于该值时直接回到站立零位，消除静止微抖")]
+    [Range(0f, 10f)]
+    public float rightKneeNeutralDeadZoneDeg = 3f;
+
+    [Tooltip("08/09数据超过该时长仍未更新时不再锁住旧膝角，开始回到站立零位")]
+    [Range(0.5f, 3f)]
+    public float rightLegInputFreshnessSeconds = 1.2f;
+
+    [Tooltip("右腿输入陈旧后回到站立零位的速度")]
+    [Range(1f, 20f)]
+    public float rightLegReturnToNeutralSpeed = 8f;
+
+    [Header("双腿骨段映射")]
+    [Tooltip("大腿向前屈曲的最大角度；坐下通常约 70-100 度")]
+    [Range(60f, 130f)]
+    public float lowerBodyThighMaxFlexionDeg = 115f;
+
+    [Tooltip("大腿允许向后伸展的最大角度")]
+    [Range(0f, 45f)]
+    public float lowerBodyThighMaxExtensionDeg = 30f;
+
+    [Tooltip("膝关节最大屈曲角度")]
+    [Range(90f, 150f)]
+    public float lowerBodyKneeMaxFlexionDeg = 135f;
+
+    [Tooltip("小于该角度的膝部变化视为静止抖动")]
+    [Range(0f, 10f)]
+    public float lowerBodyKneeNeutralDeadZoneDeg = 2f;
+
+    [Tooltip("小腿骨骼局部膝铰链轴；Bip01 小腿沿 Local X 延伸，实际屈膝轴为 Local Z")]
+    public Vector3 lowerBodyKneeHingeAxisLocal = Vector3.forward;
+
+    [Tooltip("膝弯曲方向；当前 Bip01 腿骨绕 Local Z 正方向弯曲")]
+    [Range(-1f, 1f)]
+    public float lowerBodyKneeFlexionSign = 1f;
+
     // ═══════════════════════════════════════════════════════════════
     //  根节点位移补偿
     //  IMU 只能测量旋转，不能测量位移。下蹲时如果不补偿根节点高度，
@@ -153,7 +204,7 @@ public class MotionCaptureConfig : ScriptableObject
     // ═══════════════════════════════════════════════════════════════
 
     [Header("根节点位移补偿")]
-    [Tooltip("启用后下蹲等动作时角色会自动下沉，脚部保持贴地")]
+    [Tooltip("启用后只根据腿部折叠量移动人物根节点高度，使下蹲/坐下时上半身下降；是否允许水平移动由下方独立开关控制")]
     public bool rootMotionEnabled = true;
 
     [Tooltip("左脚骨骼名称（通常为 Calf 的子节点），用于计算脚踝高度")]
@@ -168,8 +219,8 @@ public class MotionCaptureConfig : ScriptableObject
     [Tooltip("根节点最大下沉距离（米），防止异常数据导致角色钻入地下")]
     public float rootMotionMaxDrop = 1.5f;
 
-    [Tooltip("启用后下蹲等动作时角色根节点会随足部水平偏移，保持重心自然")]
-    public bool rootMotionHorizontalEnabled = true;
+    [Tooltip("启用后人物根节点会产生 X/Z 位移；当前项目保持关闭，确保场景及人物水平位置不变")]
+    public bool rootMotionHorizontalEnabled = false;
 
     [Tooltip("水平补偿平滑速度，越大响应越快，越小过渡越柔和")]
     public float rootMotionHorizontalSmoothSpeed = 6f;

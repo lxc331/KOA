@@ -238,7 +238,7 @@ public class MotionCaptureController : MonoBehaviour
         // 首次收到数据后自动执行一次校准，记录传感器初始姿态与骨骼初始姿态的偏差
         bool wasCalibrated = processor.Driver.IsCalibrated;
         if (Serial.IsConnected && State.CheckHasAnyData() && !wasCalibrated)
-            processor.TryPreCalibrate(bones);
+            processor.TryPreCalibrate(bones, State);
         if (!wasCalibrated && processor.Driver.IsCalibrated)
             logger.LogEvent("pre_calibrated", "首次收到有效数据后完成自动预校准");
 
@@ -396,7 +396,7 @@ public class MotionCaptureController : MonoBehaviour
     private void HandleBeginDriving()
     {
         logger.LogEvent("calibration_requested", "用户请求开始驱动");
-        processor.Driver.Calibrate(bones, processor.TransformedQuaternions);
+        processor.Calibrate(bones, State);
         State.SetDriving(true);
         logger.LogEvent("driving_started", $"calibrated={processor.Driver.IsCalibrated}");
     }
