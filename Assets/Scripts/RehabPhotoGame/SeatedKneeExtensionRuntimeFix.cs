@@ -4,20 +4,40 @@ using UnityEngine;
 
 namespace RehabPhotoGame
 {
+    [DefaultExecutionOrder(900)]
+    public static class SeatedKneeExtensionRuntimeFixBootstrap
+    {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void Install()
+        {
+            SeatedKneeExtensionPrototype old = UnityEngine.Object.FindObjectOfType<SeatedKneeExtensionPrototype>();
+            if (old == null) return;
+            old.enabled = false;
+            SeatedKneeExtensionRuntimeFix runtime =
+                old.gameObject.GetComponent<SeatedKneeExtensionRuntimeFix>();
+            if (runtime == null)
+                runtime = old.gameObject.AddComponent<SeatedKneeExtensionRuntimeFix>();
+            if (old.gameObject.GetComponent<PhotoFocusFeedback>() == null)
+                old.gameObject.AddComponent<PhotoFocusFeedback>();
+        }
+    }
+
     [DefaultExecutionOrder(1000)]
     [DisallowMultipleComponent]
-    public sealed class SeatedKneeExtensionPrototype : MonoBehaviour
+    public sealed class SeatedKneeExtensionRuntimeFix : MonoBehaviour
     {
-        [SerializeField] private MotionCaptureController motionCapture;
-        [SerializeField] private TrainingLeg trainingLeg = TrainingLeg.Left;
-        [SerializeField] private SeatedKneeExtensionSettings settings = new SeatedKneeExtensionSettings();
-
         private const float SwitchSettleSeconds = 1.6f;
         private const int SwitchRequiredSamples = 2;
-        private const float RightReadyReferenceDeg = 90f;
-        private const float RightOffsetLimitDeg = 25f;
-        private const float SpeechGapSeconds = 4f;
+        private const float SpeechGapSeconds = 4.5f;
+        private const float RightRawStraightReferenceDeg = 17f;
+        private const float AutoLegMotionThresholdDeg = 10f;
+        private const float AutoLegDominance = 2.5f;
+        private const float AutoLegConfirmSeconds = 0.45f;
 
+        private MotionCaptureController motionCapture;
+        private MotionCaptureUI motionUI;
+        private TrainingLeg trainingLeg = TrainingLeg.Left;
+        private SeatedKneeExtensionSettings settings;
         private SeatedKneeExtensionEvaluator leftEvaluator;
         private SeatedKneeExtensionEvaluator rightEvaluator;
         private LowerBodyMeasurement sample;
@@ -28,12 +48,22 @@ namespace RehabPhotoGame
         private int switchSamples;
         private float switchKneeSum;
         private int switchKneeCount;
+        private float switchThighSum;
+        private int switchThighCount;
 
-        private float rightSessionOffsetDeg;
-        private bool rightSessionOffsetReady;
+        private float rightRawReadyDeg = float.NaN;
+        private float rawRightKneeDeg = float.NaN;
+        private int sessionVersion;
+
+        private bool hasMotionBaseline;
+        private Quaternion lastLeftCalfQ;
+        private Quaternion lastRightCalfQ;
+        private float leftMotionScore;
+        private float rightMotionScore;
+        private TrainingLeg pendingAutoLeg = TrainingLeg.Both;
+        private float pendingAutoLegSince;
 
         private KneeExtensionStage previousStage;
-        private int previousRepetitions;
         private Process speechProcess;
         private float nextSpeechAt;
         private float nextDiagnosticAt;
@@ -43,57 +73,104 @@ namespace RehabPhotoGame
         private GUIStyle headerStyle, instructionStyle, bodyStyle, smallStyle;
         private GUIStyle valueStyle, titleStyle, stageStyle;
 
-        private static readonly Color DarkGreen = new Color(0.08f, 0.20f, 0.16f, 1f);
-        private static readonly Color Green = new Color(0.12f, 0.48f, 0.31f, 1f);
+        private static readonly Color DarkGreen = new Color(0.07f, 0.20f, 0.10f, 1f);
+        private static readonly Color Green = new Color(0.18f, 0.42f, 0.20f, 1f);
 
         private SeatedKneeExtensionEvaluator ActiveEvaluator =>
             trainingLeg == TrainingLeg.Right ? rightEvaluator : leftEvaluator;
 
+        /// <summary>
+        /// 摄影玩法只读取这一份训练快照，不重复计算四元数和膝角。
+        /// </summary>
+        public KneeExtensionTrainingSnapshot CurrentSnapshot
+        {
+            get
+            {
+                SeatedKneeExtensionEvaluator evaluator = ActiveEvaluator;
+                if (evaluator == null || settings == null)
+                {
+                    return new KneeExtensionTrainingSnapshot
+                    {
+                        Leg = trainingLeg,
+                        Stage = KneeExtensionStage.Preparing,
+                        SessionVersion = sessionVersion,
+                        IsSwitchingLeg = true,
+                        BlockReason = "训练模块正在初始化"
+                    };
+                }
+
+                return new KneeExtensionTrainingSnapshot
+                {
+                    Leg = trainingLeg,
+                    Stage = evaluator.Stage,
+                    SessionVersion = sessionVersion,
+                    IsSwitchingLeg = switchingLeg,
+                    IsDataValid = sample.IsValid && !switchingLeg,
+                    HasReadyReference = evaluator.HasReadyReference,
+                    CompletedRepetitions = evaluator.CompletedRepetitions,
+                    KneeAngleDeg = SelectedKneeAngle(),
+                    ReadyReferenceKneeDeg = evaluator.ReadyReferenceKneeDeg,
+                    TargetKneeDeg = evaluator.TargetKneeDeg,
+                    LiftProgress01 = LiftProgress(),
+                    HoldSeconds = evaluator.HoldSeconds,
+                    HoldDurationSeconds = settings.holdSeconds,
+                    BlockReason = switchingLeg ? SwitchPrompt() : evaluator.BlockReason
+                };
+            }
+        }
+
         private void Start()
         {
-            if (motionCapture == null)
-                motionCapture = FindObjectOfType<MotionCaptureController>();
-            if (settings == null)
-                settings = new SeatedKneeExtensionSettings();
+            motionCapture = FindObjectOfType<MotionCaptureController>();
+            motionUI = motionCapture != null ? motionCapture.GetComponent<MotionCaptureUI>() : null;
+            if (motionUI != null)
+                motionUI.OnResetRequested += HandleFullReset;
 
-            trainingLeg = TrainingLeg.Left;
-
-            settings.readyKneeMinDeg = Mathf.Max(60f, settings.readyKneeMinDeg);
-            settings.readyKneeMaxDeg = Mathf.Min(130f, settings.readyKneeMaxDeg);
-            settings.minimumExtensionDeg = Mathf.Min(20f, settings.minimumExtensionDeg);
-            settings.targetExitMarginDeg = Mathf.Max(10f, settings.targetExitMarginDeg);
-            settings.stableRangeDeg = Mathf.Max(15f, settings.stableRangeDeg);
-            settings.sensorTimeoutSeconds = Mathf.Max(2.2f, settings.sensorTimeoutSeconds);
-            settings.maxSensorSkewSeconds = Mathf.Min(
-                settings.sensorTimeoutSeconds,
-                Mathf.Max(2.2f, settings.maxSensorSkewSeconds));
-            settings.signalGraceSeconds = 4f;
+            settings = new SeatedKneeExtensionSettings
+            {
+                readyKneeMinDeg = 55f,
+                readyKneeMaxDeg = 130f,
+                seatedThighMinDeg = 45f,
+                seatedThighMaxDeg = 130f,
+                minimumExtensionDeg = 20f,
+                targetExitMarginDeg = 10f,
+                returnToleranceDeg = 15f,
+                stableRangeDeg = 15f,
+                minimumConfirmedSamples = 2,
+                readySeconds = 0.5f,
+                holdSeconds = 3f,
+                sensorTimeoutSeconds = 2.2f,
+                maxSensorSkewSeconds = 2.2f,
+                signalGraceSeconds = 4f
+            };
 
             leftEvaluator = new SeatedKneeExtensionEvaluator(settings, TrainingLeg.Left);
             rightEvaluator = new SeatedKneeExtensionEvaluator(settings, TrainingLeg.Right);
 
-            panelTexture = Solid(new Color(0.985f, 0.995f, 0.99f, 0.95f));
-            accentTexture = Solid(Green);
-            paleTexture = Solid(new Color(0.90f, 0.96f, 0.93f, 0.98f));
-            lightTexture = Solid(new Color(0.95f, 0.985f, 0.965f, 0.99f));
-            trackTexture = Solid(new Color(0.80f, 0.89f, 0.84f, 1f));
+            panelTexture = Solid(new Color(0.97f, 0.99f, 0.96f, 0.48f));
+            accentTexture = Solid(new Color(Green.r, Green.g, Green.b, 0.84f));
+            paleTexture = Solid(new Color(0.78f, 0.90f, 0.76f, 0.88f));
+            lightTexture = Solid(new Color(0.97f, 0.99f, 0.96f, 0.22f));
+            trackTexture = Solid(new Color(0.67f, 0.80f, 0.63f, 0.58f));
 
-            BeginLegSession(TrainingLeg.Left, false);
-            motionCapture?.LogGameDiagnostic("session", JsonUtility.ToJson(settings));
+            BeginLegSession(TrainingLeg.Left, false, "startup");
+            motionCapture?.LogGameDiagnostic("runtime_fix_session", JsonUtility.ToJson(settings));
         }
 
         private void Update()
         {
-            if (leftEvaluator == null || rightEvaluator == null)
+            if (motionCapture == null || leftEvaluator == null || rightEvaluator == null)
                 return;
 
             float now = Time.realtimeSinceStartup;
-            sample = motionCapture != null
-                ? motionCapture.ReadLowerBodyMeasurement(
-                    settings.sensorTimeoutSeconds,
-                    settings.maxSensorSkewSeconds,
-                    trainingLeg)
-                : new LowerBodyMeasurement { FailureReason = "缺少动捕控制器" };
+            UpdateAutomaticLegSync(now);
+
+            sample = motionCapture.ReadLowerBodyMeasurement(
+                settings.sensorTimeoutSeconds,
+                settings.maxSensorSkewSeconds,
+                trainingLeg);
+
+            rawRightKneeDeg = sample.RightKneeDeg;
 
             if (switchingLeg)
             {
@@ -101,8 +178,6 @@ namespace RehabPhotoGame
                 LogDiagnostic(now, "switching");
                 return;
             }
-
-            ApplyRightSessionOffset(ref sample);
 
             bool transientPoseGap =
                 ActiveEvaluator.HasReadyReference &&
@@ -118,6 +193,70 @@ namespace RehabPhotoGame
                 transientPoseGap ? "pose_gap" : FailureCategory(ActiveEvaluator.BlockReason));
         }
 
+        private void UpdateAutomaticLegSync(float now)
+        {
+            Quaternion[] q = motionCapture.TransformedQuaternions;
+            if (q == null || q.Length <= LowerBodyPoseDriver.RightCalfIndex) return;
+
+            Quaternion leftQ = q[LowerBodyPoseDriver.LeftCalfIndex];
+            Quaternion rightQ = q[LowerBodyPoseDriver.RightCalfIndex];
+            if (!hasMotionBaseline)
+            {
+                lastLeftCalfQ = leftQ;
+                lastRightCalfQ = rightQ;
+                hasMotionBaseline = true;
+                return;
+            }
+
+            float leftDelta = Mathf.Min(45f, Quaternion.Angle(lastLeftCalfQ, leftQ));
+            float rightDelta = Mathf.Min(45f, Quaternion.Angle(lastRightCalfQ, rightQ));
+            lastLeftCalfQ = leftQ;
+            lastRightCalfQ = rightQ;
+
+            float decay = Mathf.Exp(-Mathf.Max(0.001f, Time.unscaledDeltaTime) * 3.2f);
+            leftMotionScore = leftMotionScore * decay + leftDelta;
+            rightMotionScore = rightMotionScore * decay + rightDelta;
+
+            if (ActiveEvaluator != null &&
+                (ActiveEvaluator.Stage == KneeExtensionStage.Holding ||
+                 ActiveEvaluator.Stage == KneeExtensionStage.Returning))
+            {
+                pendingAutoLeg = TrainingLeg.Both;
+                return;
+            }
+
+            TrainingLeg candidate = TrainingLeg.Both;
+            if (leftMotionScore >= AutoLegMotionThresholdDeg &&
+                leftMotionScore > rightMotionScore * AutoLegDominance)
+                candidate = TrainingLeg.Left;
+            else if (rightMotionScore >= AutoLegMotionThresholdDeg &&
+                     rightMotionScore > leftMotionScore * AutoLegDominance)
+                candidate = TrainingLeg.Right;
+
+            if (candidate == TrainingLeg.Both || candidate == trainingLeg)
+            {
+                pendingAutoLeg = TrainingLeg.Both;
+                return;
+            }
+
+            if (pendingAutoLeg != candidate)
+            {
+                pendingAutoLeg = candidate;
+                pendingAutoLegSince = now;
+                return;
+            }
+
+            if (now - pendingAutoLegSince < AutoLegConfirmSeconds) return;
+
+            float leftScore = leftMotionScore;
+            float rightScore = rightMotionScore;
+            TrainingLeg from = trainingLeg;
+            BeginLegSession(candidate, false, "auto_motion");
+            motionCapture.LogGameDiagnostic(
+                "auto_leg_sync",
+                $"from={from}, to={candidate}, 07={leftScore:F1}, 09={rightScore:F1}");
+        }
+
         private void UpdateSwitching(float now)
         {
             bool newSample = sample.IsValid &&
@@ -129,14 +268,22 @@ namespace RehabPhotoGame
                 {
                     switchSamples++;
                     switchKneeSum += trainingLeg == TrainingLeg.Right
-                        ? sample.RightKneeDeg : sample.LeftKneeDeg;
+                        ? sample.RightKneeDeg
+                        : sample.LeftKneeDeg;
                     switchKneeCount++;
+                    if (trainingLeg == TrainingLeg.Right)
+                    {
+                        switchThighSum += sample.RightThighDeg;
+                        switchThighCount++;
+                    }
                 }
                 else
                 {
                     switchSamples = 0;
                     switchKneeSum = 0f;
                     switchKneeCount = 0;
+                    switchThighSum = 0f;
+                    switchThighCount = 0;
                 }
             }
 
@@ -144,26 +291,27 @@ namespace RehabPhotoGame
                 switchSamples < SwitchRequiredSamples || !sample.IsValid)
                 return;
 
-            if (trainingLeg == TrainingLeg.Right && switchKneeCount > 0)
+            if (trainingLeg == TrainingLeg.Right &&
+                switchKneeCount > 0 && switchThighCount > 0)
             {
-                float rawReady = switchKneeSum / switchKneeCount;
-                rightSessionOffsetDeg = Mathf.Clamp(
-                    RightReadyReferenceDeg - rawReady,
-                    -RightOffsetLimitDeg,
-                    RightOffsetLimitDeg);
-                rightSessionOffsetReady = true;
-                motionCapture?.LogGameDiagnostic(
-                    "right_ready_offset",
-                    $"rawReady={rawReady:F1}, offset={rightSessionOffsetDeg:F1}");
+                rightRawReadyDeg = switchKneeSum / switchKneeCount;
+                float rightRawSeatedThighDeg = switchThighSum / switchThighCount;
+                motionCapture.ConfigureRightLegCalibration(
+                    rightRawReadyDeg,
+                    RightRawStraightReferenceDeg,
+                    rightRawSeatedThighDeg);
+                motionCapture.LogGameDiagnostic(
+                    "right_ready_calibrated",
+                    $"rawReady={rightRawReadyDeg:F1}, straightRef={RightRawStraightReferenceDeg:F1}, " +
+                    $"seatedThigh={rightRawSeatedThighDeg:F1}");
             }
 
             switchingLeg = false;
             ActiveEvaluator.Reset(trainingLeg, false);
             previousStage = ActiveEvaluator.Stage;
-            previousRepetitions = ActiveEvaluator.CompletedRepetitions;
-            ApplyRightSessionOffset(ref sample);
-            motionCapture?.LogGameDiagnostic(
-                "leg_ready", $"leg={trainingLeg}, sensors={SensorPairLabel()}");
+            motionCapture.LogGameDiagnostic(
+                "leg_ready",
+                $"leg={trainingLeg}, sensors={SensorPairLabel()}");
         }
 
         private bool IsNaturalDownCandidate(LowerBodyMeasurement m)
@@ -173,46 +321,35 @@ namespace RehabPhotoGame
             float knee = trainingLeg == TrainingLeg.Right ? m.RightKneeDeg : m.LeftKneeDeg;
             return thigh >= settings.seatedThighMinDeg &&
                    thigh <= settings.seatedThighMaxDeg &&
-                   knee >= settings.readyKneeMinDeg &&
-                   knee <= settings.readyKneeMaxDeg;
+                   knee >= 55f && knee <= 135f;
         }
 
-        private void ApplyRightSessionOffset(ref LowerBodyMeasurement m)
+        private void BeginLegSession(TrainingLeg leg, bool speak, string source)
         {
-            if (!m.IsValid || trainingLeg != TrainingLeg.Right || !rightSessionOffsetReady)
-                return;
-            m.RightKneeDeg = Mathf.Clamp(m.RightKneeDeg + rightSessionOffsetDeg, 0f, 180f);
-        }
-
-        private void BeginLegSession(TrainingLeg leg, bool speak)
-        {
+            sessionVersion++;
             trainingLeg = leg == TrainingLeg.Right ? TrainingLeg.Right : TrainingLeg.Left;
             ActiveEvaluator.Reset(trainingLeg, false);
-
             switchingLeg = true;
             switchStartedAt = Time.realtimeSinceStartup;
             lastSwitchSampleTime = float.NegativeInfinity;
             switchSamples = 0;
             switchKneeSum = 0f;
             switchKneeCount = 0;
-
+            switchThighSum = 0f;
+            switchThighCount = 0;
+            pendingAutoLeg = TrainingLeg.Both;
+            leftMotionScore = rightMotionScore = 0f;
             if (trainingLeg == TrainingLeg.Right)
             {
-                rightSessionOffsetReady = false;
-                rightSessionOffsetDeg = 0f;
+                rightRawReadyDeg = float.NaN;
+                motionCapture?.ClearRightLegCalibration();
             }
-
             previousStage = ActiveEvaluator.Stage;
-            previousRepetitions = ActiveEvaluator.CompletedRepetitions;
             lastDiagnosticKey = "";
-            sample = new LowerBodyMeasurement
-            {
-                FailureReason = SwitchPrompt(),
-                SampleTimeSeconds = -1f
-            };
 
             motionCapture?.LogGameDiagnostic(
-                "leg_switch", $"leg={trainingLeg}, sensors={SensorPairLabel()}");
+                "leg_switch",
+                $"leg={trainingLeg}, sensors={SensorPairLabel()}, source={source}");
 
             if (speak)
                 SpeakAction($"现在训练{LegName()}腿。请坐稳，小腿自然放下。", true);
@@ -220,28 +357,22 @@ namespace RehabPhotoGame
 
         private void HandleActionVoice()
         {
-            var evaluator = ActiveEvaluator;
-            bool repChanged = evaluator.CompletedRepetitions > previousRepetitions;
-            bool stageChanged = evaluator.Stage != previousStage;
+            KneeExtensionStage stage = ActiveEvaluator.Stage;
+            if (stage == previousStage) return;
 
-            if (!repChanged && stageChanged)
+            switch (stage)
             {
-                switch (evaluator.Stage)
-                {
-                    case KneeExtensionStage.Extending:
-                        SpeakAction($"请慢慢抬起{LegName()}小腿，逐渐伸直膝盖。");
-                        break;
-                    case KneeExtensionStage.Holding:
-                        SpeakAction("很好，保持一下。");
-                        break;
-                    case KneeExtensionStage.Returning:
-                        SpeakAction($"很好，慢慢放下{LegName()}小腿。");
-                        break;
-                }
+                case KneeExtensionStage.Extending:
+                    SpeakAction($"请慢慢抬起{LegName()}小腿，逐渐伸直膝盖。");
+                    break;
+                case KneeExtensionStage.Holding:
+                    SpeakAction("很好，已经达到目标，请保持一下。");
+                    break;
+                case KneeExtensionStage.Returning:
+                    SpeakAction($"很好，请慢慢放下{LegName()}小腿。");
+                    break;
             }
-
-            previousStage = evaluator.Stage;
-            previousRepetitions = evaluator.CompletedRepetitions;
+            previousStage = stage;
         }
 
         private void SpeakAction(string text, bool force = false)
@@ -249,7 +380,6 @@ namespace RehabPhotoGame
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
             float now = Time.realtimeSinceStartup;
             if (!force && now < nextSpeechAt) return;
-
             try
             {
                 if (speechProcess != null)
@@ -270,7 +400,7 @@ namespace RehabPhotoGame
                     "$v=$voices | Where-Object {$_.VoiceInfo.Culture.Name -like 'zh-*' -and $_.VoiceInfo.Gender -eq [System.Speech.Synthesis.VoiceGender]::Female} | Select-Object -First 1; " +
                     "if(-not $v){$v=$voices | Where-Object {$_.VoiceInfo.Gender -eq [System.Speech.Synthesis.VoiceGender]::Female} | Select-Object -First 1}; " +
                     "if($v){$s.SelectVoice($v.VoiceInfo.Name)}; " +
-                    "$s.Rate=-3; $s.Volume=82; $s.Speak('" + escaped + "');";
+                    "$s.Rate=-4; $s.Volume=80; $s.Speak('" + escaped + "');";
 
                 speechProcess = Process.Start(new ProcessStartInfo
                 {
@@ -305,7 +435,7 @@ namespace RehabPhotoGame
             if (key == lastDiagnosticKey && now < nextDiagnosticAt) return;
 
             motionCapture?.LogGameDiagnostic(
-                key != lastDiagnosticKey ? "transition" : "sample",
+                key != lastDiagnosticKey ? "runtime_fix_transition" : "runtime_fix_sample",
                 JsonUtility.ToJson(new Diagnostic
                 {
                     leg = trainingLeg.ToString(),
@@ -317,11 +447,24 @@ namespace RehabPhotoGame
                     targetKneeDeg = e.TargetKneeDeg,
                     blockReason = switchingLeg ? SwitchPrompt() : e.BlockReason,
                     switching = switchingLeg,
-                    rightSessionOffsetDeg = rightSessionOffsetDeg,
+                    rawRightKneeDeg = rawRightKneeDeg,
+                    rightRawReadyDeg = rightRawReadyDeg,
+                    rightStraightReferenceDeg = RightRawStraightReferenceDeg,
                     measurement = sample
                 }));
             lastDiagnosticKey = key;
             nextDiagnosticAt = now + 0.5f;
+        }
+
+        private void HandleFullReset()
+        {
+            leftEvaluator?.Reset(TrainingLeg.Left, true);
+            rightEvaluator?.Reset(TrainingLeg.Right, true);
+            hasMotionBaseline = false;
+            rawRightKneeDeg = float.NaN;
+            rightRawReadyDeg = float.NaN;
+            if (leftEvaluator != null && rightEvaluator != null)
+                BeginLegSession(trainingLeg, false, "full_reset");
         }
 
         private void OnDisable()
@@ -329,11 +472,12 @@ namespace RehabPhotoGame
             StopSpeech();
             leftEvaluator?.Reset(TrainingLeg.Left, false);
             rightEvaluator?.Reset(TrainingLeg.Right, false);
-            motionCapture?.LogGameDiagnostic("disabled", "当前未完成动作已取消");
         }
 
         private void OnDestroy()
         {
+            if (motionUI != null)
+                motionUI.OnResetRequested -= HandleFullReset;
             StopSpeech();
             DestroyTexture(panelTexture);
             DestroyTexture(accentTexture);
@@ -360,18 +504,16 @@ namespace RehabPhotoGame
 
             GUI.DrawTexture(new Rect(0f, 0f, panel.width, 48f), accentTexture);
             GUI.Label(new Rect(20f, 5f, 245f, 38f), "坐姿伸膝训练", headerStyle);
-            GUI.Label(new Rect(270f, 10f, 720f, 28f), RequiredSensorSummary(), smallStyle);
+            GUI.Label(new Rect(270f, 10f, 760f, 28f), RequiredSensorSummary(), smallStyle);
 
-            float buttonX = panel.width - 350f;
-            DrawLegButton(new Rect(buttonX, 8f, 165f, 32f),
+            float buttonX = panel.width - 380f;
+            DrawLegButton(new Rect(buttonX, 8f, 180f, 32f),
                 TrainingLeg.Left, "左腿  06+07");
-            DrawLegButton(new Rect(buttonX + 175f, 8f, 165f, 32f),
+            DrawLegButton(new Rect(buttonX + 190f, 8f, 180f, 32f),
                 TrainingLeg.Right, "右腿  08+09");
 
             var evaluator = ActiveEvaluator;
             bool blocked = switchingLeg || !string.IsNullOrEmpty(evaluator.BlockReason);
-            GUI.DrawTexture(new Rect(16f, 61f, panel.width - 572f, 48f),
-                blocked ? lightTexture : paleTexture);
             GUI.Label(new Rect(30f, 68f, panel.width - 600f, 34f),
                 switchingLeg ? SwitchPrompt() : (blocked ? FriendlyBlockReason() : Instruction()),
                 instructionStyle);
@@ -382,16 +524,18 @@ namespace RehabPhotoGame
             GUI.DrawTexture(progress, trackTexture);
             float ratio = LiftProgress();
             if (ratio > 0f)
-                GUI.DrawTexture(new Rect(progress.x, progress.y, progress.width * ratio, progress.height), accentTexture);
+                GUI.DrawTexture(new Rect(progress.x, progress.y,
+                    progress.width * ratio, progress.height), accentTexture);
 
-            GUI.Label(new Rect(22f, 174f, contentWidth - 44f, 24f), ProgressCaption(), bodyStyle);
-            GUI.Label(new Rect(22f, 201f, contentWidth - 170f, 24f), StageCaption(), stageStyle);
+            GUI.Label(new Rect(22f, 174f, contentWidth - 44f, 24f),
+                ProgressCaption(), bodyStyle);
+            GUI.Label(new Rect(22f, 201f, contentWidth - 170f, 24f),
+                StageCaption(), stageStyle);
 
             if (GUI.Button(new Rect(contentWidth - 126f, 196f, 112f, 28f), "重置次数"))
             {
                 evaluator.Reset(trainingLeg, true);
-                previousStage = evaluator.Stage;
-                previousRepetitions = 0;
+                BeginLegSession(trainingLeg, false, "count_reset");
             }
 
             float cardsX = panel.width - 548f;
@@ -399,7 +543,8 @@ namespace RehabPhotoGame
             DrawCard(new Rect(cardsX + 180f, 61f, 168f, 155f),
                 "完成次数", evaluator.CompletedRepetitions + " 次");
             DrawCard(new Rect(cardsX + 360f, 61f, 168f, 155f),
-                "保持计时", evaluator.HoldSeconds.ToString("F1") + " / " + settings.holdSeconds.ToString("F0") + " 秒");
+                "保持计时", evaluator.HoldSeconds.ToString("F1") + " / " +
+                settings.holdSeconds.ToString("F0") + " 秒");
 
             GUI.EndGroup();
             GUI.matrix = old;
@@ -410,30 +555,32 @@ namespace RehabPhotoGame
             bool selected = trainingLeg == leg;
             GUIStyle style = new GUIStyle(GUI.skin.button)
             {
-                fontSize = 18,
+                fontSize = 17,
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter
             };
-            style.normal.background = selected ? accentTexture : paleTexture;
-            style.normal.textColor = selected ? Color.white : DarkGreen;
-            style.hover.background = selected ? accentTexture : lightTexture;
-            style.hover.textColor = selected ? Color.white : Green;
-            style.active.background = accentTexture;
-            style.active.textColor = Color.white;
+            // 选中项使用浅绿色；未选中项与标题栏背景融为一体。
+            style.normal.background = selected ? paleTexture : accentTexture;
+            style.normal.textColor = selected ? DarkGreen : Color.white;
+            style.hover.background = selected ? paleTexture : accentTexture;
+            style.hover.textColor = selected ? DarkGreen : Color.white;
+            style.active.background = paleTexture;
+            style.active.textColor = DarkGreen;
 
             if (GUI.Button(rect, text, style) && !selected)
-                BeginLegSession(leg, true);
+                BeginLegSession(leg, true, "manual_button");
         }
 
         private void DrawCard(Rect rect, string title, string value)
         {
-            GUI.DrawTexture(rect, paleTexture);
             Color old = GUI.color;
             GUI.color = Green;
             GUI.DrawTexture(new Rect(rect.x, rect.y, 6f, rect.height), Texture2D.whiteTexture);
             GUI.color = old;
-            GUI.Label(new Rect(rect.x + 18f, rect.y + 17f, rect.width - 28f, 28f), title, titleStyle);
-            GUI.Label(new Rect(rect.x + 16f, rect.y + 56f, rect.width - 25f, 70f), value, valueStyle);
+            GUI.Label(new Rect(rect.x + 18f, rect.y + 17f,
+                rect.width - 28f, 28f), title, titleStyle);
+            GUI.Label(new Rect(rect.x + 16f, rect.y + 56f,
+                rect.width - 25f, 70f), value, valueStyle);
         }
 
         private float LiftProgress()
@@ -451,12 +598,14 @@ namespace RehabPhotoGame
             var e = ActiveEvaluator;
             if (!e.HasReadyReference)
                 return "小腿自然放下，系统会自动记录准备角度";
-            return $"准备角度 {e.ReadyReferenceKneeDeg:F0}°  ·  达标角度 ≤ {e.TargetKneeDeg:F0}°";
+            return $"准备角度 {e.ReadyReferenceKneeDeg:F0}°  ·  " +
+                   $"训练达标角度 ≤ {e.TargetKneeDeg:F0}°";
         }
 
         private string StageCaption()
         {
-            if (switchingLeg) return $"● 正在确认：{LegName()}腿（{SensorPairLabel()}）";
+            if (switchingLeg)
+                return $"● 当前{LegName()}腿：{SensorPairLabel()}（自动跟随活动腿）";
             switch (ActiveEvaluator.Stage)
             {
                 case KneeExtensionStage.Preparing: return "● 准备：坐稳并自然放下小腿";
@@ -470,10 +619,14 @@ namespace RehabPhotoGame
         {
             switch (ActiveEvaluator.Stage)
             {
-                case KneeExtensionStage.Preparing: return "请坐稳，小腿自然放下";
-                case KneeExtensionStage.Extending: return $"请慢慢抬起{LegName()}小腿，逐渐伸直膝盖";
-                case KneeExtensionStage.Holding: return "很好，请保持当前姿势";
-                default: return $"请慢慢放下{LegName()}小腿";
+                case KneeExtensionStage.Preparing:
+                    return $"{LegName()}腿：请坐稳，小腿自然放下";
+                case KneeExtensionStage.Extending:
+                    return $"{LegName()}腿：请慢慢抬起小腿，逐渐伸直膝盖";
+                case KneeExtensionStage.Holding:
+                    return "很好，已经达到目标，请保持当前姿势";
+                default:
+                    return $"{LegName()}腿：请慢慢放下小腿";
             }
         }
 
@@ -487,17 +640,19 @@ namespace RehabPhotoGame
         }
 
         private string SwitchPrompt() =>
-            $"当前选择：{LegName()}腿（{SensorPairLabel()}）。请坐稳并让小腿自然下垂。";
+            $"当前训练：{LegName()}腿（{SensorPairLabel()}）。请坐稳并让小腿自然下垂。";
 
         private string RequiredSensorSummary()
         {
             if (trainingLeg == TrainingLeg.Left)
-                return $"当前：左腿（06大腿 + 07小腿）  |  06 {Status(0)}   07 {Status(1)}";
-            return $"当前：右腿（08大腿 + 09小腿）  |  08 {Status(2)}   09 {Status(3)}";
+                return $"当前：左腿 | 06大腿 + 07小腿 | 自动跟随活动腿 | 06 {Status(0)} 07 {Status(1)}";
+            return $"当前：右腿 | 08大腿 + 09小腿 | 自动跟随活动腿 | 08 {Status(2)} 09 {Status(3)}";
         }
 
         private string SensorPairLabel() => trainingLeg == TrainingLeg.Left
-            ? "06大腿 + 07小腿" : "08大腿 + 09小腿";
+            ? "06大腿 + 07小腿"
+            : "08大腿 + 09小腿";
+
         private string LegName() => trainingLeg == TrainingLeg.Right ? "右" : "左";
 
         private string Status(int bit)
@@ -508,14 +663,16 @@ namespace RehabPhotoGame
         }
 
         private float SelectedKneeAngle() => trainingLeg == TrainingLeg.Right
-            ? sample.RightKneeDeg : sample.LeftKneeDeg;
+            ? sample.RightKneeDeg
+            : sample.LeftKneeDeg;
 
         private string CurrentAngleText()
         {
             if (switchingLeg) return "确认中";
             if (!sample.IsValid) return "--";
             float angle = SelectedKneeAngle();
-            bool reached = ActiveEvaluator.HasReadyReference && angle <= ActiveEvaluator.TargetKneeDeg;
+            bool reached = ActiveEvaluator.HasReadyReference &&
+                           angle <= ActiveEvaluator.TargetKneeDeg;
             return reached ? angle.ToString("F0") + "°\n已达标" : angle.ToString("F0") + "°";
         }
 
@@ -535,7 +692,7 @@ namespace RehabPhotoGame
             headerStyle = Label(30, FontStyle.Bold, Color.white, TextAnchor.MiddleLeft);
             instructionStyle = Label(25, FontStyle.Bold, DarkGreen, TextAnchor.MiddleLeft);
             bodyStyle = Label(19, FontStyle.Normal, DarkGreen, TextAnchor.MiddleLeft);
-            smallStyle = Label(18, FontStyle.Normal, Color.white, TextAnchor.MiddleLeft);
+            smallStyle = Label(17, FontStyle.Normal, Color.white, TextAnchor.MiddleLeft);
             valueStyle = Label(36, FontStyle.Bold, Green, TextAnchor.MiddleCenter);
             titleStyle = Label(19, FontStyle.Bold, DarkGreen, TextAnchor.MiddleLeft);
             stageStyle = Label(20, FontStyle.Bold, Green, TextAnchor.MiddleLeft);
@@ -562,6 +719,9 @@ namespace RehabPhotoGame
             return texture;
         }
 
+        private static bool IsFinite(float value) =>
+            !float.IsNaN(value) && !float.IsInfinity(value);
+
         private static void DestroyTexture(Texture2D texture)
         {
             if (texture != null) Destroy(texture);
@@ -574,7 +734,7 @@ namespace RehabPhotoGame
             public int repetitions;
             public bool switching;
             public float holdSeconds, readyReferenceKneeDeg, targetKneeDeg;
-            public float rightSessionOffsetDeg;
+            public float rawRightKneeDeg, rightRawReadyDeg, rightStraightReferenceDeg;
             public LowerBodyMeasurement measurement;
         }
     }

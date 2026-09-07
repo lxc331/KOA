@@ -13,8 +13,10 @@ namespace RehabPhotoGame.Editor
         {
             RunLogicTests();
             Run("实际采样接口按当前时钟检测断流", ProcessorFreshness);
-            Run("四元数角度提取、左右符号和显示增益隔离", QuaternionMeasurements);
-            Debug.Log("[Stage1 tests] PASS: 17 regression scenarios.");
+            Run("四元数角度提取、左右符号和人物判定一致", QuaternionMeasurements);
+            Run("下肢突跳需连续帧确认后恢复", LowerBodyJumpGuard);
+            Run("远景素材与对焦 Shader 可由 Resources 加载", PhotoResources);
+            Debug.Log("[Stage1 tests] PASS: 25 regression scenarios.");
         }
 
         public static void RunLogicTests()
@@ -26,20 +28,99 @@ namespace RehabPhotoGame.Editor
             Run("目标内大幅晃动不能积累保持", UnstableWithinTarget);
             Run("重复同一个传感器样本不能累计时间", RepeatedSample);
             Run("设备延迟缩短不能补算进入目标之前的时间", DelayedWatermark);
-            Run("四传感器同时停更时中止", AllSensorsStale);
-            Run("单传感器失联、恢复后必须重新准备", DropoutRecovery);
-            Run("返回途中失联不能补计上次动作", DropoutDuringReturn);
+            Run("短时断流暂停阶段和保持进度", AllSensorsStale);
+            Run("短时断流恢复后继续完成动作", DropoutRecovery);
+            Run("长时间断流才取消本次动作", LongDropoutRequiresReady);
+            Run("非训练腿失联不打断当前动作", OppositeLegDropoutIgnored);
+            Run("返回途中短时失联恢复后只计一次", DropoutDuringReturn);
             Run("重标定和切换腿中止旧动作", RecalibrationAndLegSwitch);
             Run("双腿模式不能由一侧动作完成", Bilateral);
             Run("右腿模式独立选择正确侧", RightLegSelection);
             Run("站姿不能触发坐位膝伸", StandingRejected);
             Run("NaN角度和无效配置停止判定", InvalidData);
+            Run("摄影清晰度随相对伸膝进度变化", PhotoFocusMapping);
+            Run("保持完成只触发一次快门", PhotoCaptureOnlyOnce);
+            Run("短时断流冻结摄影清晰度", PhotoFocusFreezesDuringDropout);
+            Run("切腿或重置不会串接上一轮快门", PhotoSessionReset);
         }
 
         private static void Run(string name, Action test)
         {
             try { test(); Console.WriteLine("[Stage1 tests] PASS " + name); }
             catch (Exception exception) { throw new Exception("[Stage1 tests] FAIL " + name, exception); }
+        }
+
+        private static KneeExtensionTrainingSnapshot PhotoSnapshot(
+            KneeExtensionStage stage, float knee, bool valid = true, int version = 1)
+        {
+            return new KneeExtensionTrainingSnapshot
+            {
+                Leg = TrainingLeg.Left,
+                Stage = stage,
+                SessionVersion = version,
+                IsDataValid = valid,
+                HasReadyReference = true,
+                KneeAngleDeg = knee,
+                ReadyReferenceKneeDeg = 90f,
+                TargetKneeDeg = 60f
+            };
+        }
+
+        private static void PhotoFocusMapping()
+        {
+            Near(0f, PhotoFocusSession.CalculateFocus(95f, 90f, 60f));
+            Near(0.5f, PhotoFocusSession.CalculateFocus(75f, 90f, 60f));
+            Near(1f, PhotoFocusSession.CalculateFocus(55f, 90f, 60f));
+            Near(0f, PhotoFocusSession.CalculateFocus(float.NaN, 90f, 60f));
+        }
+
+        private static void PhotoCaptureOnlyOnce()
+        {
+            var photo = new PhotoFocusSession();
+            Check(!photo.Update(PhotoSnapshot(KneeExtensionStage.Holding, 55f)),
+                "首次进入已有状态不应补触发快门");
+            Check(photo.Update(PhotoSnapshot(KneeExtensionStage.Returning, 55f)),
+                "保持完成未触发快门");
+            Check(!photo.Update(PhotoSnapshot(KneeExtensionStage.Returning, 55f)),
+                "停留在返回阶段重复触发快门");
+            Equal(1, photo.CapturedPhotos);
+        }
+
+        private static void PhotoFocusFreezesDuringDropout()
+        {
+            var photo = new PhotoFocusSession();
+            photo.Update(PhotoSnapshot(KneeExtensionStage.Extending, 75f));
+            Near(0.5f, photo.Focus01);
+            Check(!photo.Update(PhotoSnapshot(KneeExtensionStage.Holding, 0f, false)),
+                "无效数据不应触发快门");
+            Near(0.5f, photo.Focus01);
+        }
+
+        private static void PhotoSessionReset()
+        {
+            var photo = new PhotoFocusSession();
+            photo.Update(PhotoSnapshot(KneeExtensionStage.Holding, 55f));
+            photo.Update(PhotoSnapshot(KneeExtensionStage.Returning, 55f));
+            Equal(1, photo.CapturedPhotos);
+            Check(!photo.Update(PhotoSnapshot(KneeExtensionStage.Returning, 55f, true, 2)),
+                "新会话不能承接旧会话的保持阶段");
+            Equal(0, photo.CapturedPhotos);
+        }
+
+        private static void PhotoResources()
+        {
+            Texture2D photo = Resources.Load<Texture2D>(
+                "RehabPhotoGame/Photos/A_Distant/spring_01");
+            Check(photo != null, "未找到第1段远景素材");
+            Equal(2048, photo.width);
+            Equal(1152, photo.height);
+
+            Shader shader = Resources.Load<Shader>(
+                "RehabPhotoGame/Shaders/FocusBlur");
+            Check(shader != null, "未找到对焦模糊 Shader");
+            var material = new Material(shader);
+            try { Check(material.HasProperty("_BlurPixels"), "Shader 缺少模糊半径参数"); }
+            finally { UnityEngine.Object.DestroyImmediate(material); }
         }
 
         private sealed class Trial
@@ -102,7 +183,7 @@ namespace RehabPhotoGame.Editor
         {
             var t = new Trial(); t.Prepare(); t.Feed(10f, frames: 20);
             Check(t.Evaluator.HoldSeconds > 1f, "保持未开始");
-            t.Feed(40f);
+            t.Feed(80f);
             Equal(KneeExtensionStage.Extending, t.Evaluator.Stage);
             Near(0f, t.Evaluator.HoldSeconds);
             t.Feed(10f, frames: 20);
@@ -111,17 +192,17 @@ namespace RehabPhotoGame.Editor
 
         private static void TargetHysteresis()
         {
-            var t = new Trial(); t.Prepare(); t.Feed(19f);
-            t.Feed(23f, frames: 35);
+            var t = new Trial(); t.Prepare(); t.Feed(64f);
+            t.Feed(70f, frames: 35);
             Equal(KneeExtensionStage.Returning, t.Evaluator.Stage);
-            t = new Trial(); t.Prepare(); t.Feed(19f); t.Feed(26f);
+            t = new Trial(); t.Prepare(); t.Feed(64f); t.Feed(74f);
             Equal(KneeExtensionStage.Extending, t.Evaluator.Stage);
         }
 
         private static void UnstableWithinTarget()
         {
             var t = new Trial(); t.Prepare();
-            for (int i = 0; i < 80; i++) t.Feed(i % 2 == 0 ? 2f : 18f);
+            for (int i = 0; i < 80; i++) t.Feed(i % 2 == 0 ? 50f : 64f);
             Equal(KneeExtensionStage.Holding, t.Evaluator.Stage);
             Equal(0, t.Evaluator.CompletedRepetitions);
             Near(0f, t.Evaluator.HoldSeconds);
@@ -131,17 +212,24 @@ namespace RehabPhotoGame.Editor
         {
             var t = new Trial(); t.Prepare(); t.Feed(10f);
             for (int i = 0; i < 1000; i++) t.Evaluator.Update(t.Last, t.Time + 0.5f);
-            Near(0f, t.Evaluator.HoldSeconds);
+            Check(t.Evaluator.HoldSeconds < 1f, "重复样本错误累计为完整保持时间");
             Equal(KneeExtensionStage.Holding, t.Evaluator.Stage);
         }
 
         private static void AllSensorsStale()
         {
             var t = new Trial(); t.Prepare(); t.Feed(10f, frames: 20);
-            t.Evaluator.Update(t.Last, t.Time + 2f);
-            Equal(KneeExtensionStage.Preparing, t.Evaluator.Stage);
-            Check(t.Evaluator.BlockReason.Length > 0, "全部停更未阻止判定");
-            Near(0f, t.Evaluator.HoldSeconds);
+            float holdBeforePause = t.Evaluator.HoldSeconds;
+            var offline = t.Last;
+            offline.IsValid = false;
+            offline.FreshMask = 0;
+            offline.FailureReason = "06、07 超时；当前动作已中止";
+            t.Evaluator.Update(offline, t.Time);
+            t.Time += 4f;
+            t.Evaluator.Update(offline, t.Time);
+            Equal(KneeExtensionStage.Holding, t.Evaluator.Stage);
+            Check(t.Evaluator.SignalPaused, "断流时未进入暂停状态");
+            Near(holdBeforePause, t.Evaluator.HoldSeconds);
         }
 
         private static void DelayedWatermark()
@@ -162,22 +250,62 @@ namespace RehabPhotoGame.Editor
         private static void DropoutRecovery()
         {
             var t = new Trial(); t.Prepare(); t.Feed(10f, frames: 20);
-            var offline = t.Last; offline.FreshMask = 7;
+            var offline = t.Last;
+            offline.IsValid = false;
+            offline.FreshMask = 1;
+            offline.FailureReason = "07 超时；当前动作已中止";
             t.Evaluator.Update(offline, t.Time);
+            t.Time += 3f;
+            t.Evaluator.Update(offline, t.Time);
+            t.Feed(10f, frames: 15);
+            Equal(KneeExtensionStage.Returning, t.Evaluator.Stage);
+            Equal(0, t.Evaluator.CompletedRepetitions);
+            t.Feed(90f, frames: 12);
+            Equal(1, t.Evaluator.CompletedRepetitions);
+        }
+
+        private static void LongDropoutRequiresReady()
+        {
+            var t = new Trial(); t.Prepare(); t.Feed(10f, frames: 20);
+            var offline = t.Last;
+            offline.IsValid = false;
+            offline.FreshMask = 1;
+            offline.FailureReason = "07 超时；当前动作已中止";
+            t.Evaluator.Update(offline, t.Time);
+            t.Time += t.Settings.signalGraceSeconds + 0.1f;
+            t.Evaluator.Update(offline, t.Time);
+            Equal(KneeExtensionStage.Preparing, t.Evaluator.Stage);
+            Near(0f, t.Evaluator.HoldSeconds);
             t.Feed(10f, frames: 40);
             Equal(KneeExtensionStage.Preparing, t.Evaluator.Stage);
-            Equal(0, t.Evaluator.CompletedRepetitions);
-            t.ReachReturn(); t.Feed(90f, frames: 12);
-            Equal(1, t.Evaluator.CompletedRepetitions);
+            t.Feed(90f, frames: 12);
+            Equal(KneeExtensionStage.Extending, t.Evaluator.Stage);
+        }
+
+        private static void OppositeLegDropoutIgnored()
+        {
+            var t = new Trial(); t.Prepare(); t.Feed(10f, frames: 20);
+            var oppositeOffline = t.Last;
+            oppositeOffline.FreshMask = 7; // 09 离线，但左腿所需的 06/07 仍在线。
+            t.Evaluator.Update(oppositeOffline, t.Time);
+            Equal(KneeExtensionStage.Holding, t.Evaluator.Stage);
+            Check(t.Evaluator.BlockReason == "", "非训练腿断流不应阻止左腿判定");
+            t.Feed(10f, frames: 20);
+            Equal(KneeExtensionStage.Returning, t.Evaluator.Stage);
         }
 
         private static void DropoutDuringReturn()
         {
             var t = new Trial(); t.ReachReturn();
-            var offline = t.Last; offline.IsValid = false;
+            var offline = t.Last;
+            offline.IsValid = false;
+            offline.FreshMask = 1;
+            offline.FailureReason = "07 超时；当前动作已中止";
+            t.Evaluator.Update(offline, t.Time);
+            t.Time += 2f;
             t.Evaluator.Update(offline, t.Time);
             t.Feed(90f, frames: 20);
-            Equal(0, t.Evaluator.CompletedRepetitions);
+            Equal(1, t.Evaluator.CompletedRepetitions);
         }
 
         private static void RecalibrationAndLegSwitch()
@@ -222,8 +350,8 @@ namespace RehabPhotoGame.Editor
         {
             var t = new Trial(); t.Prepare(); t.Feed(float.NaN);
             Check(t.Evaluator.BlockReason.Length > 0, "NaN 未拒绝");
-            t.Settings.targetKneeMaxDeg = 90f; t.Feed(90f);
-            Check(t.Evaluator.BlockReason.Contains("参数"), "重叠目标/准备范围未拒绝");
+            t.Settings.minimumExtensionDeg = 0f; t.Feed(90f);
+            Check(t.Evaluator.BlockReason.Contains("参数"), "无效相对抬腿目标未拒绝");
         }
 
         private static void ProcessorFreshness()
@@ -239,6 +367,10 @@ namespace RehabPhotoGame.Editor
                 Equal(0, processor.ReadLowerBodyMeasurement(12f, 1.5f, 1f).FreshMask);
                 for (int i = 5; i <= 7; i++) times[i] = 12f;
                 Equal(7, processor.ReadLowerBodyMeasurement(12f, 1.5f, 1f).FreshMask);
+                LowerBodyMeasurement selectedPair = processor.ReadLowerBodyMeasurement(12f, 3f, 3f, 3);
+                Equal(3, selectedPair.FreshMask & 3);
+                Check(!selectedPair.FailureReason.Contains("08") && !selectedPair.FailureReason.Contains("09"),
+                    "左腿训练不应等待右腿传感器");
                 times[8] = 12f;
                 processor.RawQuaternions[8] = new Quaternion(float.NaN, 0, 0, 1);
                 Check(processor.ReadLowerBodyMeasurement(12f, 1.5f, 1f).FailureReason.Contains("四元数"),
@@ -286,8 +418,8 @@ namespace RehabPhotoGame.Editor
                 Check(driver.TryMeasureLeg(1, rotations, out thighDeg, out kneeDeg), "右侧伸膝失败");
                 Near(30f, kneeDeg);
                 driver.ConstrainTargets(rotations, targets, new[] { false, false, false, false, false, true, true, true, true });
-                // 当前显示增益会把左膝 30°显示为 0°，游戏必须仍读取 30°。
-                Near(0f, Quaternion.Angle(targets[5], targets[6]));
+                // 人物与游戏使用同一膝角，避免画面已经伸直而判定仍显示 30°。
+                Near(30f, Quaternion.Angle(targets[5], targets[6]));
                 driver.TryMeasureLeg(0, rotations, out thighDeg, out kneeDeg); Near(30f, kneeDeg);
                 Quaternion q = rotations[8];
                 rotations[8] = new Quaternion(-q.x, -q.y, -q.z, -q.w);
@@ -300,6 +432,41 @@ namespace RehabPhotoGame.Editor
                 UnityEngine.Object.DestroyImmediate(root);
                 UnityEngine.Object.DestroyImmediate(config);
             }
+        }
+
+        private static void LowerBodyJumpGuard()
+        {
+            var config = ScriptableObject.CreateInstance<MotionCaptureConfig>();
+            try
+            {
+                config.lowerBodyJumpRejectDeg = 45f;
+                config.lowerBodyJumpRecoveryFrames = 3;
+                config.lowerBodyJumpRecoveryToleranceDeg = 12f;
+                var processor = new SensorDataProcessor(config);
+                int[] counts = Field<int[]>(processor, "receivedFrameCounts");
+                counts[5] = 1;
+
+                MethodInfo guard = typeof(SensorDataProcessor).GetMethod(
+                    "TryAcceptLowerBodyFrame",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                Check(guard != null, "找不到下肢突跳保护入口");
+                Quaternion jump = Quaternion.AngleAxis(80f, Vector3.right);
+                Check(!(bool)guard.Invoke(processor, new object[] { 5, jump }),
+                    "第一帧突跳不应直接通过");
+                Check(!(bool)guard.Invoke(processor, new object[] { 5, jump }),
+                    "第二帧突跳不应直接通过");
+                Check((bool)guard.Invoke(processor, new object[] { 5, jump }),
+                    "连续三帧一致的新姿态应允许恢复");
+                Equal(2L, processor.LowerBodyGuardRejectedFrameCounts[5]);
+
+                Quaternion normal = Quaternion.AngleAxis(20f, Vector3.right);
+                Check((bool)guard.Invoke(processor, new object[] { 5, normal }),
+                    "正常范围内的动作不应被拦截");
+                Quaternion invalid = new Quaternion(float.NaN, 0f, 0f, 1f);
+                Check(!(bool)guard.Invoke(processor, new object[] { 5, invalid }),
+                    "非法四元数不应进入恢复确认或人物驱动");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(config); }
         }
 
         private static T Field<T>(object instance, string name) =>

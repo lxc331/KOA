@@ -134,6 +134,9 @@ public sealed class TelemetryLogger : IDisposable
             anomalyEnabled = config.anomalyEnable,
             anomalyBufferSize = config.anomalyBufferSize,
             anomalyThresholdDeg = config.anomalyThreshold,
+            lowerBodyJumpRejectDeg = config.lowerBodyJumpRejectDeg,
+            lowerBodyJumpRecoveryFrames = config.lowerBodyJumpRecoveryFrames,
+            lowerBodyJumpRecoveryToleranceDeg = config.lowerBodyJumpRecoveryToleranceDeg,
             rootMotionEnabled = config.rootMotionEnabled,
             rootMotionHorizontalEnabled = config.rootMotionHorizontalEnabled,
             rootMotionMaxDrop = config.rootMotionMaxDrop,
@@ -266,6 +269,10 @@ public sealed class TelemetryLogger : IDisposable
                 driverTargetQuaternion = targetQ,
                 driverTargetEuler = targetQ.eulerAngles,
                 droppedFrameCount = ReadDroppedFrameCount(parser, i),
+                lowerBodyGuardRejectedFrameCount =
+                    processor.LowerBodyGuardRejectedFrameCounts != null &&
+                    i < processor.LowerBodyGuardRejectedFrameCounts.Length
+                        ? processor.LowerBodyGuardRejectedFrameCounts[i] : 0,
                 boneFound = bone != null,
                 boneLocalQuaternion = bone != null ? bone.transform.localRotation : Quaternion.identity,
                 boneLocalEuler = bone != null ? bone.transform.localEulerAngles : Vector3.zero,
@@ -515,8 +522,10 @@ public sealed class TelemetryLogger : IDisposable
         public string type, utc, port;
         public float realtimeSeconds;
         public int unityFrame, baud, deviceCount, minStableDevices, requiredStableFrames, anomalyBufferSize;
+        public int lowerBodyJumpRecoveryFrames;
         public bool requireAllDevices, anomalyEnabled, rootMotionEnabled, rootMotionHorizontalEnabled;
         public float maxAngularSpeedDeg, smoothSpeed, debounceThresholdDeg, anomalyThresholdDeg;
+        public float lowerBodyJumpRejectDeg, lowerBodyJumpRecoveryToleranceDeg;
         public float rootMotionMaxDrop, rootMotionMaxHorizontalOffset;
         public Vector3[] minLocalAngles, maxLocalAngles;
         public BindingRecord[] bindings;
@@ -568,7 +577,7 @@ public sealed class TelemetryLogger : IDisposable
         public int index, stableCount;
         public string deviceId, boneName, latestFrameTimestamp;
         public bool hasData, hasLatestFrame, hasDriverTarget, boneFound;
-        public long acceptedFrameCount, droppedFrameCount;
+        public long acceptedFrameCount, droppedFrameCount, lowerBodyGuardRejectedFrameCount;
         public Quaternion rawQuaternion, transformedQuaternion, latestFrameQuaternion, driverTargetQuaternion;
         public Quaternion boneLocalQuaternion, boneWorldQuaternion, restLocalQuaternion;
         public Vector3 rawEuler, transformedEuler, latestFrameEuler, driverTargetEuler;

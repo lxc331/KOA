@@ -29,6 +29,9 @@ public class SensorDataProcessor
     // 误判为稳定，因此标定前还必须检查真实接收帧数和新鲜度。
     private readonly float[] lastFrameRealtimeSeconds;
     private readonly int[] receivedFrameCounts;
+    private readonly Quaternion[] pendingLowerBodyRecovery;
+    private readonly int[] pendingLowerBodyRecoveryCounts;
+    private readonly long[] lowerBodyGuardRejectedFrameCounts;
 
     private StabilityMonitor stabilityMonitor;
 
@@ -40,6 +43,7 @@ public class SensorDataProcessor
 
     public Quaternion[] TransformedQuaternions => transformedQuaternions;
     public Quaternion[] RawQuaternions => rawQuaternions;
+    public long[] LowerBodyGuardRejectedFrameCounts => lowerBodyGuardRejectedFrameCounts;
     public int[] StableCounts => stabilityMonitor != null
         ? stabilityMonitor.StableCounts
         : Array.Empty<int>();
@@ -54,12 +58,27 @@ public class SensorDataProcessor
     public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
         float now, float timeoutSeconds, float maxSkewSeconds)
     {
+        return ReadLowerBodyMeasurement(now, timeoutSeconds, maxSkewSeconds, 15);
+    }
+
+    /// <summary>
+    /// 按训练模式读取需要的下肢传感器。FreshMask 仍报告 06～09 全部状态，
+    /// 但有效性、时间差和采样水位只由 requiredMask 指定的传感器决定：
+    /// 左腿=0011，右腿=1100，双腿=1111。
+    /// </summary>
+    public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
+        float now, float timeoutSeconds, float maxSkewSeconds, int requiredMask)
+    {
+        requiredMask &= 15;
+        if (requiredMask == 0) requiredMask = 15;
         var sample = new RehabPhotoGame.LowerBodyMeasurement
         {
             CalibrationVersion = CalibrationVersion,
             SampleTimeSeconds = -1f,
             FailureReason = "等待 06～09 数据"
         };
+        sample.Sensor06AgeSeconds = sample.Sensor07AgeSeconds =
+            sample.Sensor08AgeSeconds = sample.Sensor09AgeSeconds = -1f;
         if (!HasCompleteLowerBodyLayout()) return sample;
 
         float oldest = float.PositiveInfinity;
@@ -69,25 +88,32 @@ public class SensorDataProcessor
         {
             float receivedAt = lastFrameRealtimeSeconds[i];
             float age = now - receivedAt;
+            sample.SetSensorAgeSeconds(i - LowerBodyFirstIndex,
+                receivedFrameCounts[i] > 0 && age >= 0f ? age : -1f);
             if (receivedFrameCounts[i] > 0 && age >= 0f && age <= timeoutSeconds)
                 sample.FreshMask |= 1 << (i - LowerBodyFirstIndex);
-            oldest = Mathf.Min(oldest, receivedAt);
-            newest = Mathf.Max(newest, receivedAt);
+            int bit = 1 << (i - LowerBodyFirstIndex);
+            if ((requiredMask & bit) != 0)
+            {
+                oldest = Mathf.Min(oldest, receivedAt);
+                newest = Mathf.Max(newest, receivedAt);
+            }
             Quaternion q = rawQuaternions[i];
             float normSquared = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
-            quaternionsValid &= !float.IsNaN(normSquared) && !float.IsInfinity(normSquared) &&
-                normSquared >= 0.25f && normSquared <= 2.25f;
+            if ((requiredMask & bit) != 0)
+                quaternionsValid &= !float.IsNaN(normSquared) && !float.IsInfinity(normSquared) &&
+                    normSquared >= 0.25f && normSquared <= 2.25f;
         }
-        // 只有四个设备的最旧接收时刻前进，保持计时才允许前进。
+        // 只有当前训练所需设备的最旧接收时刻前进，保持窗口才允许确认新样本。
         sample.SampleTimeSeconds = float.IsInfinity(oldest) ? -1f : oldest;
-        if (sample.FreshMask != 15)
+        if ((sample.FreshMask & requiredMask) != requiredMask)
         {
-            sample.FailureReason = "传感器缺失或超时；当前动作已中止";
+            sample.FailureReason = BuildFreshnessFailure(sample, timeoutSeconds, requiredMask);
             return sample;
         }
         if (newest - oldest > maxSkewSeconds)
         {
-            sample.FailureReason = "四传感器时间差过大";
+            sample.FailureReason = $"四传感器时间差过大（{newest - oldest:F1} 秒）";
             return sample;
         }
         if (!quaternionsValid)
@@ -95,11 +121,13 @@ public class SensorDataProcessor
             sample.FailureReason = "四元数无效";
             return sample;
         }
-        if (!Driver.IsCalibrated ||
-            !lowerBodyPoseDriver.TryMeasureLeg(0, transformedQuaternions,
-                out sample.LeftThighDeg, out sample.LeftKneeDeg) ||
-            !lowerBodyPoseDriver.TryMeasureLeg(1, transformedQuaternions,
-                out sample.RightThighDeg, out sample.RightKneeDeg))
+        bool needLeft = (requiredMask & 3) != 0;
+        bool needRight = (requiredMask & 12) != 0;
+        bool measuredLeft = !needLeft || lowerBodyPoseDriver.TryMeasureLeg(
+            0, transformedQuaternions, out sample.LeftThighDeg, out sample.LeftKneeDeg);
+        bool measuredRight = !needRight || lowerBodyPoseDriver.TryMeasureLeg(
+            1, transformedQuaternions, out sample.RightThighDeg, out sample.RightKneeDeg);
+        if (!Driver.IsCalibrated || !measuredLeft || !measuredRight)
         {
             sample.LeftThighDeg = sample.LeftKneeDeg = sample.RightThighDeg = sample.RightKneeDeg = 0f;
             sample.FailureReason = "请先完成站姿标定并开始动捕驱动";
@@ -125,6 +153,9 @@ public class SensorDataProcessor
         inputFresh = new bool[deviceCount];
         lastFrameRealtimeSeconds = new float[deviceCount];
         receivedFrameCounts = new int[deviceCount];
+        pendingLowerBodyRecovery = new Quaternion[deviceCount];
+        pendingLowerBodyRecoveryCounts = new int[deviceCount];
+        lowerBodyGuardRejectedFrameCounts = new long[deviceCount];
 
         for (int i = 0; i < deviceCount; i++)
         {
@@ -132,6 +163,7 @@ public class SensorDataProcessor
             transformedQuaternions[i] = Quaternion.identity;
             lastFrameRealtimeSeconds[i] = float.NegativeInfinity;
             receivedFrameCounts[i] = 0;
+            pendingLowerBodyRecovery[i] = Quaternion.identity;
         }
 
         stabilityMonitor = new StabilityMonitor(deviceCount);
@@ -141,6 +173,16 @@ public class SensorDataProcessor
     }
 
     public void SetRootFacingOffset(Quaternion offset) => rootFacingOffset = offset;
+
+    public void ConfigureRightLegCalibration(
+        float rawReadyKneeDeg,
+        float rawStraightKneeDeg,
+        float rawSeatedThighDeg) =>
+        lowerBodyPoseDriver.ConfigureRightLegCalibration(
+            rawReadyKneeDeg, rawStraightKneeDeg, rawSeatedThighDeg);
+
+    public void ClearRightLegCalibration() =>
+        lowerBodyPoseDriver.ClearRightLegCalibration();
 
     public void InitConstraints(Quaternion[] restLocalRotations)
     {
@@ -165,9 +207,16 @@ public class SensorDataProcessor
             if (deviceId < 0 || deviceId >= deviceCount)
                 continue;
 
+            var e = q.eulerAngles;
+            // 日志保留解析器收到的原始帧，包括被下肢二次保护拒绝的突跳，
+            // 便于区分无线/硬件异常和人物驱动结果。
+            onFrame?.Invoke(deviceId, q, e);
+
+            if (!TryAcceptLowerBodyFrame(deviceId, q))
+                continue;
+
             rawQuaternions[deviceId] = q;
 
-            var e = q.eulerAngles;
             yaw[deviceId] = e.z;
             pitch[deviceId] = e.y;
             roll[deviceId] = e.x;
@@ -180,7 +229,6 @@ public class SensorDataProcessor
             lastFrameRealtimeSeconds[deviceId] = Time.realtimeSinceStartup;
             receivedFrameCounts[deviceId]++;
 
-            onFrame?.Invoke(deviceId, q, e);
             count++;
         }
 
@@ -327,13 +375,35 @@ public class SensorDataProcessor
 
         for (int i = 0; i < deviceCount; i++)
         {
-            inputFresh[i] = hasLatest[i] &&
-                (targetTime - latestFrames[i].Timestamp).TotalSeconds <=
-                freshnessSeconds;
+            if (i >= LowerBodyFirstIndex && i <= LowerBodyLastIndex)
+            {
+                float age = Time.realtimeSinceStartup - lastFrameRealtimeSeconds[i];
+                inputFresh[i] = receivedFrameCounts[i] > 0 && age >= 0f &&
+                    age <= freshnessSeconds;
+            }
+            else
+            {
+                inputFresh[i] = hasLatest[i] &&
+                    (targetTime - latestFrames[i].Timestamp).TotalSeconds <=
+                    freshnessSeconds;
+            }
         }
 
         for (int i = 0; i < deviceCount; i++)
         {
+            // 下肢使用 DequeueAll 已通过突跳保护的最后姿态。不能再次直接从
+            // parser latest 读取，否则被拒绝的异常帧仍会绕过保护写入人物。
+            if (i >= LowerBodyFirstIndex && i <= LowerBodyLastIndex)
+            {
+                if (state.GetDeviceHasData(i))
+                {
+                    transformedQuaternions[i] =
+                        MapSensorToAvatarSpace(i, rawQuaternions[i]);
+                    devicesApplied++;
+                }
+                continue;
+            }
+
             if (!hasLatest[i])
             {
                 if (requireAllDevices)
@@ -433,6 +503,9 @@ public class SensorDataProcessor
             hasLatest[i] = false;
             lastFrameRealtimeSeconds[i] = float.NegativeInfinity;
             receivedFrameCounts[i] = 0;
+            pendingLowerBodyRecoveryCounts[i] = 0;
+            pendingLowerBodyRecovery[i] = Quaternion.identity;
+            lowerBodyGuardRejectedFrameCounts[i] = 0;
         }
 
         Driver.ResetToRestPose(bones, restLocalRotations);
@@ -453,6 +526,83 @@ public class SensorDataProcessor
     private bool HasCompleteLowerBodyLayout()
     {
         return deviceCount > LowerBodyLastIndex;
+    }
+
+    /// <summary>
+    /// Main.dll 的通用异常检测未能拦住实测中 07 的 80°/102°突跳。
+    /// 下肢在应用前再做一次保护：正常连续动作直接通过；大幅跳变必须由数帧
+    /// 相互接近的新姿态确认，避免一次异常回包把抬起的小腿突然打回去。
+    /// </summary>
+    private bool TryAcceptLowerBodyFrame(int deviceIndex, Quaternion candidate)
+    {
+        if (deviceIndex < LowerBodyFirstIndex || deviceIndex > LowerBodyLastIndex)
+            return true;
+
+        float normSquared = candidate.x * candidate.x + candidate.y * candidate.y +
+            candidate.z * candidate.z + candidate.w * candidate.w;
+        if (float.IsNaN(normSquared) || float.IsInfinity(normSquared) ||
+            normSquared < 0.25f || normSquared > 2.25f)
+        {
+            pendingLowerBodyRecoveryCounts[deviceIndex] = 0;
+            lowerBodyGuardRejectedFrameCounts[deviceIndex]++;
+            return false;
+        }
+
+        if (receivedFrameCounts[deviceIndex] == 0)
+        {
+            pendingLowerBodyRecoveryCounts[deviceIndex] = 0;
+            return true;
+        }
+
+        float threshold = Mathf.Max(1f, config.lowerBodyJumpRejectDeg);
+        if (Quaternion.Angle(rawQuaternions[deviceIndex], candidate) <= threshold)
+        {
+            pendingLowerBodyRecoveryCounts[deviceIndex] = 0;
+            return true;
+        }
+
+        float tolerance = Mathf.Max(0.1f, config.lowerBodyJumpRecoveryToleranceDeg);
+        if (pendingLowerBodyRecoveryCounts[deviceIndex] == 0 ||
+            Quaternion.Angle(pendingLowerBodyRecovery[deviceIndex], candidate) > tolerance)
+        {
+            pendingLowerBodyRecovery[deviceIndex] = candidate;
+            pendingLowerBodyRecoveryCounts[deviceIndex] = 1;
+        }
+        else
+        {
+            pendingLowerBodyRecovery[deviceIndex] = candidate;
+            pendingLowerBodyRecoveryCounts[deviceIndex]++;
+        }
+
+        int required = Mathf.Clamp(config.lowerBodyJumpRecoveryFrames, 2, 5);
+        if (pendingLowerBodyRecoveryCounts[deviceIndex] >= required)
+        {
+            pendingLowerBodyRecoveryCounts[deviceIndex] = 0;
+            return true;
+        }
+
+        lowerBodyGuardRejectedFrameCounts[deviceIndex]++;
+        return false;
+    }
+
+    private static string BuildFreshnessFailure(
+        RehabPhotoGame.LowerBodyMeasurement sample,
+        float timeoutSeconds,
+        int requiredMask)
+    {
+        string detail = "";
+        for (int bit = 0; bit < 4; bit++)
+        {
+            if ((requiredMask & (1 << bit)) == 0) continue;
+            if ((sample.FreshMask & (1 << bit)) != 0) continue;
+            if (detail.Length > 0) detail += "，";
+            float age = sample.GetSensorAgeSeconds(bit);
+            detail += $"{bit + 6:00} " +
+                (age < 0f ? "未收到数据" : $"超时 {age:F1} 秒");
+        }
+        return detail.Length == 0
+            ? $"传感器超过 {timeoutSeconds:F1} 秒未更新；当前动作已中止"
+            : detail + "；当前动作已中止";
     }
 
     private bool AreLowerBodySensorsReady(bool[] deviceHasData)

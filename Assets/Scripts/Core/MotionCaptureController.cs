@@ -112,14 +112,24 @@ public class MotionCaptureController : MonoBehaviour
     public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
         float timeoutSeconds, float maxSkewSeconds)
     {
+        return ReadLowerBodyMeasurement(timeoutSeconds, maxSkewSeconds,
+            RehabPhotoGame.TrainingLeg.Both);
+    }
+
+    public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
+        float timeoutSeconds, float maxSkewSeconds, RehabPhotoGame.TrainingLeg leg)
+    {
+        int requiredMask = leg == RehabPhotoGame.TrainingLeg.Left ? 3 :
+            leg == RehabPhotoGame.TrainingLeg.Right ? 12 : 15;
         var sample = processor != null
-            ? processor.ReadLowerBodyMeasurement(Time.realtimeSinceStartup, timeoutSeconds, maxSkewSeconds)
+            ? processor.ReadLowerBodyMeasurement(Time.realtimeSinceStartup,
+                timeoutSeconds, maxSkewSeconds, requiredMask)
             : new RehabPhotoGame.LowerBodyMeasurement();
         if (!isActiveAndEnabled || State == null || Serial == null || !Serial.IsConnected ||
             !State.IsDriving || !State.IsCalibrated)
         {
             sample.IsValid = false;
-            sample.FailureReason = "等待串口连接、四传感器站姿标定及开始驱动";
+            sample.FailureReason = "等待串口连接、站姿标定及开始驱动";
         }
         return sample;
     }
@@ -128,6 +138,21 @@ public class MotionCaptureController : MonoBehaviour
     public void LogGameDiagnostic(string eventName, string detail)
     {
         logger?.LogEvent("knee_extension_" + eventName, detail);
+    }
+
+    /// <summary>把右腿坐姿/伸直校正同时应用于角度显示与人物骨骼驱动。</summary>
+    public void ConfigureRightLegCalibration(
+        float rawReadyKneeDeg,
+        float rawStraightKneeDeg,
+        float rawSeatedThighDeg)
+    {
+        processor?.ConfigureRightLegCalibration(
+            rawReadyKneeDeg, rawStraightKneeDeg, rawSeatedThighDeg);
+    }
+
+    public void ClearRightLegCalibration()
+    {
+        processor?.ClearRightLegCalibration();
     }
 
     // ═══════════════════════════════════════════════════════════════

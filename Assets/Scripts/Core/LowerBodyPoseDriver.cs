@@ -3,10 +3,9 @@ using UnityEngine;
 /// <summary>
 /// 将 06-09 惯性传感器映射为双腿的解剖运动。
 ///
-/// IMU 的航向会漂移，而大腿/小腿的长轴方向仍然可靠。因此这里不把完整
-/// 四元数直接复制给骨骼，只读取骨段长轴方向，并将运动约束到角色矢状面：
-/// 髋关节负责前后屈伸，膝关节负责单轴弯曲。这样可保留坐下、起立和坐姿
-/// 小腿前踢，同时阻止静止航向漂移造成整条腿绕轴旋转或交叉。
+/// V1.6 的三维膝角算法对右腿有效，但让左腿在伸直时仍残留约 70°，
+/// 并直接导致左小腿人物模型无法完全抬起。本版恢复 d967ffa 时左腿使用的
+/// 矢状面算法，只保留右腿的三维夹角算法。
 /// </summary>
 public sealed class LowerBodyPoseDriver
 {
@@ -17,8 +16,6 @@ public sealed class LowerBodyPoseDriver
 
     private const int FirstIndex = LeftThighIndex;
     private const int SegmentCount = 4;
-    private const float LeftKneeSeatedReferenceDeg = 90f;
-    private const float LeftKneeExtensionGain = 1.5f;
 
     private readonly MotionCaptureConfig config;
     private readonly bool[] calibrated = new bool[SegmentCount];
@@ -29,6 +26,11 @@ public sealed class LowerBodyPoseDriver
     private readonly Transform[] parents = new Transform[SegmentCount];
     private readonly float[] thighFlexionDeg = new float[2];
     private readonly float[] kneeFlexionDeg = new float[2];
+
+    private bool hasRightLegCalibration;
+    private float rightKneeRawReadyDeg;
+    private float rightKneeRawStraightDeg;
+    private float rightThighRawSeatedDeg;
 
     private Quaternion avatarFacing = Quaternion.identity;
     private bool geometryReady;
@@ -56,12 +58,32 @@ public sealed class LowerBodyPoseDriver
         thighFlexionDeg[1] = 0f;
         kneeFlexionDeg[0] = 0f;
         kneeFlexionDeg[1] = 0f;
+        hasRightLegCalibration = false;
+        rightKneeRawReadyDeg = 0f;
+        rightKneeRawStraightDeg = 0f;
+        rightThighRawSeatedDeg = 0f;
     }
 
-    /// <summary>
-    /// 各传感器独立上线、独立标定。09 晚到时优先复用 07 已识别出的
-    /// “传感器局部骨段轴”，因此即使 09 在坐姿中上线也不会把坐姿当零位。
-    /// </summary>
+    public void ConfigureRightLegCalibration(
+        float rawReadyKneeDeg,
+        float rawStraightKneeDeg,
+        float rawSeatedThighDeg)
+    {
+        float kneeSpan = rawReadyKneeDeg - rawStraightKneeDeg;
+        if (float.IsNaN(kneeSpan) || float.IsInfinity(kneeSpan) || kneeSpan < 35f ||
+            float.IsNaN(rawSeatedThighDeg) || float.IsInfinity(rawSeatedThighDeg))
+            return;
+        rightKneeRawReadyDeg = rawReadyKneeDeg;
+        rightKneeRawStraightDeg = rawStraightKneeDeg;
+        rightThighRawSeatedDeg = rawSeatedThighDeg;
+        hasRightLegCalibration = true;
+    }
+
+    public void ClearRightLegCalibration()
+    {
+        hasRightLegCalibration = false;
+    }
+
     public void TryCalibrate(
         Quaternion[] sensorRotations,
         GameObject[] sourceBones,
@@ -133,8 +155,8 @@ public sealed class LowerBodyPoseDriver
     }
 
     /// <summary>
-    /// 读取标定后的实测角度，供游戏判定使用。沿用当前左右腿方向约定，
-    /// 不使用显示增益、限幅、失联保持值或另一条腿的回退值。
+    /// 左腿恢复 d967ffa 的矢状面算法；右腿保留 V1.6 三维骨段夹角。
+    /// 这样分别保留两侧目前实测表现更好的算法，不再强行用同一公式。
     /// </summary>
     public bool TryMeasureLeg(int leg, Quaternion[] sensorRotations,
         out float thighAngle, out float kneeAngle)
@@ -149,7 +171,6 @@ public sealed class LowerBodyPoseDriver
         if (!calibrated[thighIndex - FirstIndex] || !calibrated[calfIndex - FirstIndex])
             return false;
 
-        // 横向接近水平时，矢状投影退化，不能把它当成伸直的 0 度。
         Vector3 thighDirection = Quaternion.Inverse(avatarFacing) *
             GetMeasuredSegmentDirection(thighIndex, thighIndex - FirstIndex, sensorRotations);
         Vector3 calfDirection = Quaternion.Inverse(avatarFacing) *
@@ -159,9 +180,22 @@ public sealed class LowerBodyPoseDriver
             return false;
 
         thighAngle = GetSagittalFlexion(thighIndex, thighIndex - FirstIndex, sensorRotations);
-        float calfAngle = GetSagittalFlexion(calfIndex, calfIndex - FirstIndex, sensorRotations);
-        if (leg == 1) calfAngle = -calfAngle;
-        kneeAngle = Mathf.Abs(Mathf.DeltaAngle(thighAngle, calfAngle));
+        if (leg == 1)
+            thighAngle = CorrectRightThighFlexion(thighAngle);
+
+        if (leg == 0)
+        {
+            // 左腿恢复上一个稳定版本：伸直时可正确回到接近 0°。
+            float calfAngle = GetSagittalFlexion(calfIndex, calfIndex - FirstIndex, sensorRotations);
+            kneeAngle = Mathf.Abs(Mathf.DeltaAngle(thighAngle, calfAngle));
+        }
+        else
+        {
+            if (!TryGetRightKneeFlexion3D(sensorRotations, out kneeAngle))
+                return false;
+            kneeAngle = CorrectRightKneeFlexion(kneeAngle);
+        }
+
         return !float.IsNaN(thighAngle) && !float.IsInfinity(thighAngle) &&
             !float.IsNaN(kneeAngle) && !float.IsInfinity(kneeAngle);
     }
@@ -209,6 +243,8 @@ public sealed class LowerBodyPoseDriver
         }
 
         float flexion = GetSagittalFlexion(deviceIndex, slot, sensorRotations);
+        if (leg == 1)
+            flexion = CorrectRightThighFlexion(flexion);
         flexion = Mathf.Clamp(
             flexion,
             -Mathf.Abs(config.lowerBodyThighMaxExtensionDeg),
@@ -251,16 +287,7 @@ public sealed class LowerBodyPoseDriver
 
             if (calibrated[thighSlot])
             {
-                if (deviceIndex == RightCalfIndex)
-                {
-                    float thighSagittal = GetSagittalFlexion(
-                        measuredThighIndex, thighSlot, sensorRotations);
-                    float calfSagittal = -GetSagittalFlexion(
-                        deviceIndex, slot, sensorRotations);
-                    kneeFlexion = Mathf.Abs(
-                        Mathf.DeltaAngle(thighSagittal, calfSagittal));
-                }
-                else
+                if (leg == 0)
                 {
                     float thighSagittal = GetSagittalFlexion(
                         measuredThighIndex, thighSlot, sensorRotations);
@@ -268,6 +295,14 @@ public sealed class LowerBodyPoseDriver
                         deviceIndex, slot, sensorRotations);
                     kneeFlexion = Mathf.Abs(
                         Mathf.DeltaAngle(thighSagittal, calfSagittal));
+                }
+                else if (TryGetRightKneeFlexion3D(sensorRotations, out float rightKnee))
+                {
+                    kneeFlexion = CorrectRightKneeFlexion(rightKnee);
+                }
+                else
+                {
+                    kneeFlexion = kneeFlexionDeg[leg];
                 }
             }
             else
@@ -298,21 +333,6 @@ public sealed class LowerBodyPoseDriver
             }
         }
 
-        // 07 左小腿专项：只增强“从约 90°坐姿向完全伸直”的区间。
-        // 90°本身不变，后勾（>90°）不变，避免影响已经可用的坐姿与后勾。
-        // 当前诊断中最高前踢仍残留约 30°屈曲；1.5 倍伸展增益可把它压到接近 0°。
-        if (deviceIndex == LeftCalfIndex &&
-            calfIsFresh &&
-            kneeFlexion < LeftKneeSeatedReferenceDeg)
-        {
-            float extensionFromSeated =
-                LeftKneeSeatedReferenceDeg - kneeFlexion;
-            kneeFlexion = Mathf.Max(
-                0f,
-                LeftKneeSeatedReferenceDeg -
-                extensionFromSeated * LeftKneeExtensionGain);
-        }
-
         kneeFlexion = Mathf.Clamp(
             kneeFlexion,
             0f,
@@ -334,6 +354,54 @@ public sealed class LowerBodyPoseDriver
             ? targets[thighIndex]
             : (parents[slot] != null ? parents[slot].rotation : Quaternion.identity);
         targets[deviceIndex] = NormalizeSafe(parentTargetWorld * targetLocal);
+    }
+
+    private float CorrectRightThighFlexion(float rawThighDeg)
+    {
+        if (!hasRightLegCalibration)
+            return rawThighDeg;
+
+        return rawThighDeg + (90f - rightThighRawSeatedDeg);
+    }
+
+    private float CorrectRightKneeFlexion(float rawKneeDeg)
+    {
+        if (!hasRightLegCalibration)
+            return rawKneeDeg;
+
+        float span = rightKneeRawReadyDeg - rightKneeRawStraightDeg;
+        if (span < 35f)
+            return rawKneeDeg;
+
+        float corrected = (rawKneeDeg - rightKneeRawStraightDeg) * 90f / span;
+        float deadZone = Mathf.Max(2f, config.lowerBodyKneeNeutralDeadZoneDeg);
+        if (corrected <= deadZone)
+            return 0f;
+        return Mathf.Clamp(corrected, 0f,
+            Mathf.Abs(config.lowerBodyKneeMaxFlexionDeg));
+    }
+
+    private bool TryGetRightKneeFlexion3D(
+        Quaternion[] sensorRotations,
+        out float kneeFlexion)
+    {
+        kneeFlexion = 0f;
+        int thighSlot = RightThighIndex - FirstIndex;
+        int calfSlot = RightCalfIndex - FirstIndex;
+        if (!calibrated[thighSlot] || !calibrated[calfSlot])
+            return false;
+
+        Vector3 thigh = Quaternion.Inverse(avatarFacing) *
+            GetMeasuredSegmentDirection(RightThighIndex, thighSlot, sensorRotations);
+        Vector3 calf = Quaternion.Inverse(avatarFacing) *
+            GetMeasuredSegmentDirection(RightCalfIndex, calfSlot, sensorRotations);
+        calf.z = -calf.z;
+
+        if (thigh.sqrMagnitude < 0.000001f || calf.sqrMagnitude < 0.000001f)
+            return false;
+
+        kneeFlexion = Vector3.Angle(thigh.normalized, calf.normalized);
+        return !float.IsNaN(kneeFlexion) && !float.IsInfinity(kneeFlexion);
     }
 
     private bool IsFresh(int deviceIndex, bool[] inputFresh)

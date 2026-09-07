@@ -49,6 +49,9 @@ MonoBehaviour:
   anomalyEnable: 1
   anomalyBufferSize: 10
   anomalyThreshold: 45
+  lowerBodyJumpRejectDeg: 45
+  lowerBodyJumpRecoveryFrames: 3
+  lowerBodyJumpRecoveryToleranceDeg: 12
   requiredStableFrames: 20
   maxAngularSpeedDeg: 3
   requireAllDevices: 0

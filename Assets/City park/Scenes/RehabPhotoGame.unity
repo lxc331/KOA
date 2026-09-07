@@ -23255,17 +23255,20 @@ MonoBehaviour:
   motionCapture: {fileID: 1288887003}
   trainingLeg: 0
   settings:
-    readyKneeMinDeg: 70
-    readyKneeMaxDeg: 110
-    seatedThighMinDeg: 55
-    seatedThighMaxDeg: 120
-    targetKneeMaxDeg: 20
-    targetExitMarginDeg: 5
-    stableRangeDeg: 5
-    readySeconds: 0.6
+    readyKneeMinDeg: 35
+    readyKneeMaxDeg: 135
+    seatedThighMinDeg: 45
+    seatedThighMaxDeg: 130
+    minimumExtensionDeg: 25
+    targetExitMarginDeg: 8
+    returnToleranceDeg: 15
+    stableRangeDeg: 12
+    minimumConfirmedSamples: 2
+    readySeconds: 0.5
     holdSeconds: 3
     sensorTimeoutSeconds: 1.5
-    maxSensorSkewSeconds: 1
+    maxSensorSkewSeconds: 1.5
+    signalGraceSeconds: 8
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

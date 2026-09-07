@@ -112,6 +112,19 @@ public class MotionCaptureConfig : ScriptableObject
     [Tooltip("单帧角度跳变阈值（度）：超过此值的帧被视为异常并丢弃")]
     public float anomalyThreshold = 45f;
 
+    [Header("下肢突跳保护")]
+    [Tooltip("06～09 单次变化超过该角度时，先视为可疑帧，不直接驱动人物或游戏判定")]
+    [Range(15f, 90f)]
+    public float lowerBodyJumpRejectDeg = 45f;
+
+    [Tooltip("可疑姿态需要连续多少帧彼此接近，才作为传感器恢复后的真实姿态接收")]
+    [Range(2, 5)]
+    public int lowerBodyJumpRecoveryFrames = 3;
+
+    [Tooltip("连续可疑帧之间允许的角度差；超过后重新开始恢复确认")]
+    [Range(1f, 30f)]
+    public float lowerBodyJumpRecoveryToleranceDeg = 12f;
+
     // ═══════════════════════════════════════════════════════════════
     //  稳定性检测
     //  开始驱动前，确认传感器数据已稳定（穿戴者保持静止）。
@@ -253,6 +266,5 @@ public class MotionCaptureConfig : ScriptableObject
         }
     }
 }
-
 
 
