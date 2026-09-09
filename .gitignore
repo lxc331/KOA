@@ -8,6 +8,9 @@
 /[Mm]emoryCaptures/
 /[Aa]ssets/AssetStoreTools*
 
+# Local transfer archives
+/Assets.zip
+
 # Visual Studio / VS Code / Rider 临时文件
 .vs/
 .idea/

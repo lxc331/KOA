@@ -47,11 +47,53 @@ public class MotionCaptureUI : MonoBehaviour
     private bool twistSwingEnabledUI;
     private bool requireAllDevicesUI;
     private int minStableDevicesUI = 1;
+    private bool formalTrainingMode;
+    private bool formalConnectionPanelVisible = true;
 
     private bool portDropdownOpen;
     private Vector2 portDropdownScroll;
     private Rect controlWindowRect = new Rect(20f, 20f, 320f, 450f);
     private Rect telemetryWindowRect;
+
+    /// <summary>
+    /// 正式训练模式只保留必要的串口连接窗口，四元数遥测表不进入患者 UI。
+    /// </summary>
+    public void SetFormalTrainingMode(bool enabled)
+    {
+        formalTrainingMode = enabled;
+        if (enabled && controller != null && controller.State != null)
+            formalConnectionPanelVisible = !controller.State.IsDriving;
+    }
+
+    public void SetFormalConnectionPanelVisible(bool visible)
+    {
+        formalConnectionPanelVisible = visible;
+    }
+
+    public bool IsFormalConnectionPanelVisible => formalConnectionPanelVisible;
+
+    public bool CanBeginDrivingFromFormalUI
+    {
+        get
+        {
+            MotionCaptureState state = controller != null ? controller.State : null;
+            return state != null && state.IsConnected && state.HasAnyData &&
+                   state.IsCalibrated && state.IsStable && !state.IsDriving;
+        }
+    }
+
+    public bool TryBeginDrivingFromFormalUI()
+    {
+        if (controller != null && controller.State != null &&
+            controller.State.IsDriving)
+            return true;
+        if (!CanBeginDrivingFromFormalUI) return false;
+        hasStarted = true;
+        isCalibratingUI = false;
+        OnBeginDrivingRequested?.Invoke();
+        return controller != null && controller.State != null &&
+               controller.State.IsDriving;
+    }
 
     private void Awake()
     {
@@ -105,6 +147,18 @@ public class MotionCaptureUI : MonoBehaviour
         if (controller == null || controller.State == null || controller.Serial == null)
             return;
         EnsureStyles();
+
+        if (formalTrainingMode)
+        {
+            if (formalConnectionPanelVisible)
+            {
+                controlWindowRect = GUI.Window(
+                    CtrlWindowId, controlWindowRect, DrawControlWindow, "", windowStyle);
+                DrawCenterStartButton();
+            }
+            return;
+        }
+
         controlWindowRect = GUI.Window(CtrlWindowId, controlWindowRect, DrawControlWindow, "", windowStyle);
         telemetryWindowRect = GUI.Window(TeleWindowId, telemetryWindowRect, DrawTelemetryWindow, "", windowStyle);
         DrawCenterStartButton();

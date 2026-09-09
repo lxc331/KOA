@@ -16,7 +16,8 @@ namespace RehabPhotoGame.Editor
             Run("四元数角度提取、左右符号和人物判定一致", QuaternionMeasurements);
             Run("下肢突跳需连续帧确认后恢复", LowerBodyJumpGuard);
             Run("远景素材与对焦 Shader 可由 Resources 加载", PhotoResources);
-            Debug.Log("[Stage1 tests] PASS: 25 regression scenarios.");
+            Run("S1 正式 Canvas 可创建且不显示原始遥测", FormalCanvasSmoke);
+            Debug.Log("[Stage1 tests] PASS: 29 regression scenarios.");
         }
 
         public static void RunLogicTests()
@@ -42,6 +43,9 @@ namespace RehabPhotoGame.Editor
             Run("保持完成只触发一次快门", PhotoCaptureOnlyOnce);
             Run("短时断流冻结摄影清晰度", PhotoFocusFreezesDuringDropout);
             Run("切腿或重置不会串接上一轮快门", PhotoSessionReset);
+            Run("正式训练会话按目标次数完成", FormalSessionTarget);
+            Run("暂停和结束时不能继续累计拍摄", FormalSessionPauseAndEnd);
+            Run("运行时快门音频波形有效", ShutterWaveform);
         }
 
         private static void Run(string name, Action test)
@@ -107,6 +111,59 @@ namespace RehabPhotoGame.Editor
             Equal(0, photo.CapturedPhotos);
         }
 
+        private static void FormalSessionTarget()
+        {
+            var formal = new S1TrainingSession();
+            formal.SetTarget(3);
+            formal.Start();
+            Equal(S1TrainingRunState.Running, formal.State);
+            Check(!formal.RecordCapture(), "第1次拍摄不应提前完成训练");
+            Check(!formal.RecordCapture(), "第2次拍摄不应提前完成训练");
+            Check(formal.RecordCapture(), "达到目标次数后未完成训练");
+            Equal(S1TrainingRunState.Completed, formal.State);
+            Equal(3, formal.CompletedRepetitions);
+            Check(!formal.RecordCapture(), "完成后仍然累计了拍摄次数");
+            Equal(3, formal.CompletedRepetitions);
+        }
+
+        private static void FormalSessionPauseAndEnd()
+        {
+            var formal = new S1TrainingSession();
+            formal.SetTarget(0);
+            Equal(1, formal.TargetRepetitions);
+            formal.SetTarget(25);
+            Equal(20, formal.TargetRepetitions);
+            formal.SetTarget(2);
+            formal.Start();
+            formal.RecordCapture();
+            Check(formal.Pause(), "训练中无法暂停");
+            Check(!formal.RecordCapture(), "暂停时仍然累计拍摄次数");
+            Equal(1, formal.CompletedRepetitions);
+            Check(formal.Resume(), "暂停后无法继续");
+            Check(formal.End(), "训练中无法结束");
+            Check(!formal.RecordCapture(), "结束后仍然累计拍摄次数");
+            formal.ReturnToSetup();
+            Equal(S1TrainingRunState.Idle, formal.State);
+            Equal(0, formal.CompletedRepetitions);
+        }
+
+        private static void ShutterWaveform()
+        {
+            float[] samples = ShutterSound.BuildSamples(ShutterSound.SampleRate);
+            Equal((int)Math.Round(
+                    ShutterSound.SampleRate * ShutterSound.DurationSeconds),
+                samples.Length);
+            double energy = 0.0;
+            for (int i = 0; i < samples.Length; i++)
+            {
+                Check(!float.IsNaN(samples[i]) && !float.IsInfinity(samples[i]),
+                    "快门音频包含无效采样");
+                Check(Math.Abs(samples[i]) <= 1f, "快门音频采样超出有效范围");
+                energy += samples[i] * samples[i];
+            }
+            Check(energy > 1.0, "快门音频几乎没有声音");
+        }
+
         private static void PhotoResources()
         {
             Texture2D photo = Resources.Load<Texture2D>(
@@ -121,6 +178,53 @@ namespace RehabPhotoGame.Editor
             var material = new Material(shader);
             try { Check(material.HasProperty("_BlurPixels"), "Shader 缺少模糊半径参数"); }
             finally { UnityEngine.Object.DestroyImmediate(material); }
+        }
+
+        private static void FormalCanvasSmoke()
+        {
+            UnityEditor.SceneManagement.EditorSceneManager.OpenScene(
+                "Assets/City park/Scenes/RehabPhotoGame.unity");
+            var host = new GameObject("S1 Formal UI Smoke Host");
+            GameObject canvasRoot = null;
+            try
+            {
+                var controller = host.AddComponent<S1TrainingCanvasController>();
+                MethodInfo start = typeof(S1TrainingCanvasController).GetMethod(
+                    "Start", BindingFlags.Instance | BindingFlags.NonPublic);
+                Check(start != null, "找不到正式界面启动入口");
+                start.Invoke(controller, null);
+
+                canvasRoot = GameObject.Find("S1 Formal Training Canvas");
+                Check(canvasRoot != null, "没有创建正式训练 Canvas");
+                Check(canvasRoot.GetComponent<Canvas>() != null, "正式界面缺少 Canvas");
+                Check(canvasRoot.GetComponentsInChildren<UnityEngine.UI.Button>(true).Length >= 9,
+                    "正式界面操作按钮不完整");
+                Check(canvasRoot.GetComponentsInChildren<UnityEngine.UI.RawImage>(true).Length == 1,
+                    "正式界面没有唯一摄影取景框");
+
+                TMPro.TMP_Text[] labels =
+                    canvasRoot.GetComponentsInChildren<TMPro.TMP_Text>(true);
+                Font bundledFont = Resources.Load<Font>(
+                    "RehabPhotoGame/Fonts/NotoSansSC-Regular");
+                Check(bundledFont != null, "未加载项目内置中文字体");
+                Check(labels.Length > 0 && labels[0].font != null &&
+                      labels[0].font != TMPro.TMP_Settings.defaultFontAsset &&
+                      labels[0].font.HasCharacter('中'),
+                    "正式界面没有使用包含中文字形的项目字体");
+                string allText = "";
+                for (int i = 0; i < labels.Length; i++) allText += labels[i].text + "\n";
+                Check(allText.Contains("公园摄影站") &&
+                      allText.Contains("教练示范") &&
+                      allText.Contains("开始训练"), "正式界面关键内容缺失");
+                Check(!allText.Contains("q0") && !allText.Contains("Yaw") &&
+                      !allText.Contains("Pitch") && !allText.Contains("Roll") &&
+                      !allText.Contains("四元数"), "原始遥测进入了正式界面");
+            }
+            finally
+            {
+                if (canvasRoot != null) UnityEngine.Object.DestroyImmediate(canvasRoot);
+                UnityEngine.Object.DestroyImmediate(host);
+            }
         }
 
         private sealed class Trial

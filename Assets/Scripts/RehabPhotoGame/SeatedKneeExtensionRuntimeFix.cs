@@ -17,8 +17,11 @@ namespace RehabPhotoGame
                 old.gameObject.GetComponent<SeatedKneeExtensionRuntimeFix>();
             if (runtime == null)
                 runtime = old.gameObject.AddComponent<SeatedKneeExtensionRuntimeFix>();
-            if (old.gameObject.GetComponent<PhotoFocusFeedback>() == null)
-                old.gameObject.AddComponent<PhotoFocusFeedback>();
+            PhotoFocusFeedback legacyPhoto = old.gameObject.GetComponent<PhotoFocusFeedback>();
+            if (legacyPhoto != null)
+                legacyPhoto.enabled = false;
+            if (old.gameObject.GetComponent<S1TrainingCanvasController>() == null)
+                old.gameObject.AddComponent<S1TrainingCanvasController>();
         }
     }
 
@@ -54,6 +57,8 @@ namespace RehabPhotoGame
         private float rightRawReadyDeg = float.NaN;
         private float rawRightKneeDeg = float.NaN;
         private int sessionVersion;
+        private bool sessionPaused;
+        private bool showTechnicalOverlay = true;
 
         private bool hasMotionBaseline;
         private Quaternion lastLeftCalfQ;
@@ -95,6 +100,7 @@ namespace RehabPhotoGame
                         Stage = KneeExtensionStage.Preparing,
                         SessionVersion = sessionVersion,
                         IsSwitchingLeg = true,
+                        IsSessionPaused = sessionPaused,
                         BlockReason = "训练模块正在初始化"
                     };
                 }
@@ -105,7 +111,8 @@ namespace RehabPhotoGame
                     Stage = evaluator.Stage,
                     SessionVersion = sessionVersion,
                     IsSwitchingLeg = switchingLeg,
-                    IsDataValid = sample.IsValid && !switchingLeg,
+                    IsSessionPaused = sessionPaused,
+                    IsDataValid = sample.IsValid && !switchingLeg && !sessionPaused,
                     HasReadyReference = evaluator.HasReadyReference,
                     CompletedRepetitions = evaluator.CompletedRepetitions,
                     KneeAngleDeg = SelectedKneeAngle(),
@@ -114,8 +121,67 @@ namespace RehabPhotoGame
                     LiftProgress01 = LiftProgress(),
                     HoldSeconds = evaluator.HoldSeconds,
                     HoldDurationSeconds = settings.holdSeconds,
-                    BlockReason = switchingLeg ? SwitchPrompt() : evaluator.BlockReason
+                    BlockReason = sessionPaused
+                        ? "训练已暂停，可以先放松"
+                        : switchingLeg ? SwitchPrompt() : evaluator.BlockReason
                 };
+            }
+        }
+
+        public void SetTechnicalOverlayVisible(bool visible)
+        {
+            showTechnicalOverlay = visible;
+        }
+
+        /// <summary>由正式训练界面暂停判定；已有完成次数不会被清除。</summary>
+        public void SetSessionPaused(bool paused, string source)
+        {
+            if (sessionPaused == paused) return;
+            sessionPaused = paused;
+            if (paused)
+            {
+                ActiveEvaluator?.Reset(trainingLeg, false);
+                switchingLeg = false;
+                pendingAutoLeg = TrainingLeg.Both;
+                leftMotionScore = rightMotionScore = 0f;
+                previousStage = ActiveEvaluator != null
+                    ? ActiveEvaluator.Stage
+                    : KneeExtensionStage.Preparing;
+            }
+            else if (leftEvaluator != null && rightEvaluator != null)
+            {
+                BeginLegSession(trainingLeg, false, source ?? "formal_ui_resume");
+            }
+
+            lastDiagnosticKey = "";
+            motionCapture?.LogGameDiagnostic(
+                paused ? "training_session_paused" : "training_session_resumed",
+                $"leg={trainingLeg}, source={source ?? "formal_ui"}");
+        }
+
+        public void SelectTrainingLeg(TrainingLeg leg, string source)
+        {
+            TrainingLeg selected = leg == TrainingLeg.Right
+                ? TrainingLeg.Right
+                : TrainingLeg.Left;
+            if (selected == trainingLeg) return;
+
+            if (sessionPaused)
+            {
+                trainingLeg = selected;
+                ActiveEvaluator?.Reset(trainingLeg, false);
+                sessionVersion++;
+                previousStage = ActiveEvaluator != null
+                    ? ActiveEvaluator.Stage
+                    : KneeExtensionStage.Preparing;
+                lastDiagnosticKey = "";
+                motionCapture?.LogGameDiagnostic(
+                    "leg_switch",
+                    $"leg={trainingLeg}, sensors={SensorPairLabel()}, source={source ?? "formal_ui"}");
+            }
+            else
+            {
+                BeginLegSession(selected, true, source ?? "formal_ui");
             }
         }
 
@@ -171,6 +237,12 @@ namespace RehabPhotoGame
                 trainingLeg);
 
             rawRightKneeDeg = sample.RightKneeDeg;
+
+            if (sessionPaused)
+            {
+                LogDiagnostic(now, "session_paused");
+                return;
+            }
 
             if (switchingLeg)
             {
@@ -447,6 +519,7 @@ namespace RehabPhotoGame
                     targetKneeDeg = e.TargetKneeDeg,
                     blockReason = switchingLeg ? SwitchPrompt() : e.BlockReason,
                     switching = switchingLeg,
+                    sessionPaused = sessionPaused,
                     rawRightKneeDeg = rawRightKneeDeg,
                     rightRawReadyDeg = rightRawReadyDeg,
                     rightStraightReferenceDeg = RightRawStraightReferenceDeg,
@@ -488,6 +561,7 @@ namespace RehabPhotoGame
 
         private void OnGUI()
         {
+            if (!showTechnicalOverlay) return;
             if (leftEvaluator == null || rightEvaluator == null) return;
             EnsureStyles();
 
@@ -732,7 +806,7 @@ namespace RehabPhotoGame
         {
             public string leg, stage, sensorPair, blockReason;
             public int repetitions;
-            public bool switching;
+            public bool switching, sessionPaused;
             public float holdSeconds, readyReferenceKneeDeg, targetKneeDeg;
             public float rawRightKneeDeg, rightRawReadyDeg, rightStraightReferenceDeg;
             public LowerBodyMeasurement measurement;

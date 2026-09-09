@@ -13,6 +13,7 @@ namespace RehabPhotoGame
         public KneeExtensionStage Stage;
         public int SessionVersion;
         public bool IsSwitchingLeg;
+        public bool IsSessionPaused;
         public bool IsDataValid;
         public bool HasReadyReference;
         public int CompletedRepetitions;
