@@ -14,10 +14,12 @@ namespace RehabPhotoGame.Editor
             RunLogicTests();
             Run("实际采样接口按当前时钟检测断流", ProcessorFreshness);
             Run("四元数角度提取、左右符号和人物判定一致", QuaternionMeasurements);
+            Run("单侧小腿掉线不会复制另一侧膝角", CrossLegDropoutDoesNotMirror);
+            Run("S1 可关闭根节点补偿且后续训练可恢复", RootMotionTrainingGate);
             Run("下肢突跳需连续帧确认后恢复", LowerBodyJumpGuard);
             Run("远景素材与对焦 Shader 可由 Resources 加载", PhotoResources);
             Run("S1 正式 Canvas 可创建且不显示原始遥测", FormalCanvasSmoke);
-            Debug.Log("[Stage1 tests] PASS: 29 regression scenarios.");
+            Debug.Log("[Stage1 tests] PASS: 31 regression scenarios.");
         }
 
         public static void RunLogicTests()
@@ -467,6 +469,8 @@ namespace RehabPhotoGame.Editor
                 float[] times = Field<float[]>(processor, "lastFrameRealtimeSeconds");
                 int[] counts = Field<int[]>(processor, "receivedFrameCounts");
                 for (int i = 5; i <= 8; i++) { times[i] = 10f; counts[i] = 3; }
+                Near(1f, processor.GetDeviceFrameAgeSeconds(5, 11f));
+                Near(-1f, processor.GetDeviceFrameAgeSeconds(4, 11f));
                 Equal(15, processor.ReadLowerBodyMeasurement(11f, 1.5f, 1f).FreshMask);
                 Equal(0, processor.ReadLowerBodyMeasurement(12f, 1.5f, 1f).FreshMask);
                 for (int i = 5; i <= 7; i++) times[i] = 12f;
@@ -538,6 +542,101 @@ namespace RehabPhotoGame.Editor
             }
         }
 
+        private static void CrossLegDropoutDoesNotMirror()
+        {
+            var config = ScriptableObject.CreateInstance<MotionCaptureConfig>();
+            var root = new GameObject("Stage2.1 dropout rig");
+            try
+            {
+                var bones = new GameObject[9];
+                var rotations = new Quaternion[9];
+                var rest = new Quaternion[9];
+                var targets = new Quaternion[9];
+                var state = new MotionCaptureState(9);
+                for (int i = 0; i < 9; i++)
+                    rotations[i] = rest[i] = targets[i] = Quaternion.identity;
+                for (int thigh = 5; thigh <= 7; thigh += 2)
+                {
+                    bones[thigh] = new GameObject("Thigh " + thigh);
+                    bones[thigh].transform.SetParent(root.transform, false);
+                    bones[thigh + 1] = new GameObject("Calf " + (thigh + 1));
+                    bones[thigh + 1].transform.SetParent(bones[thigh].transform, false);
+                    bones[thigh + 1].transform.localPosition = Vector3.down;
+                    var foot = new GameObject("Foot " + thigh);
+                    foot.transform.SetParent(bones[thigh + 1].transform, false);
+                    foot.transform.localPosition = Vector3.down;
+                    state.SetDeviceHasData(thigh, true);
+                    state.SetDeviceHasData(thigh + 1, true);
+                }
+
+                var driver = new LowerBodyPoseDriver(config);
+                driver.TryCalibrate(rotations, bones, rest, Quaternion.identity, state);
+                bool[] allFresh = { false, false, false, false, false, true, true, true, true };
+
+                // 先建立双腿自然下垂（约 90°）的各自可信姿态。
+                rotations[5] = rotations[7] = Quaternion.AngleAxis(-90f, Vector3.right);
+                rotations[6] = rotations[8] = Quaternion.identity;
+                driver.ConstrainTargets(rotations, targets, allFresh);
+                Near(90f, Quaternion.Angle(targets[5], targets[6]));
+                Near(90f, Quaternion.Angle(targets[7], targets[8]));
+
+                // 右腿前踢且 07 掉线：左膝必须保持 90°，不能跟成右膝 0°。
+                rotations[8] = Quaternion.AngleAxis(90f, Vector3.right);
+                bool[] leftCalfStale = { false, false, false, false, false, true, false, true, true };
+                driver.ConstrainTargets(rotations, targets, leftCalfStale);
+                Near(90f, Quaternion.Angle(targets[5], targets[6]));
+                Near(0f, Quaternion.Angle(targets[7], targets[8]));
+
+                // 对称场景：左腿前踢且 09 掉线，右膝同样保持自己的 90°。
+                rotations[8] = Quaternion.identity;
+                driver.ConstrainTargets(rotations, targets, allFresh);
+                rotations[6] = Quaternion.AngleAxis(-90f, Vector3.right);
+                bool[] rightCalfStale = { false, false, false, false, false, true, true, true, false };
+                driver.ConstrainTargets(rotations, targets, rightCalfStale);
+                Near(0f, Quaternion.Angle(targets[5], targets[6]));
+                Near(90f, Quaternion.Angle(targets[7], targets[8]));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                UnityEngine.Object.DestroyImmediate(config);
+            }
+        }
+
+        private static void RootMotionTrainingGate()
+        {
+            UnityEditor.SceneManagement.EditorSceneManager.OpenScene(
+                "Assets/City park/Scenes/RehabPhotoGame.unity");
+            MotionCaptureController controller =
+                UnityEngine.Object.FindObjectOfType<MotionCaptureController>();
+            Check(controller != null, "S1 场景缺少 MotionCaptureController");
+
+            var root = new GameObject("Stage2.1 root motion test root");
+            var foot = new GameObject("Stage2.1 root motion test foot");
+            try
+            {
+                root.transform.position = new Vector3(0f, 2f, 0f);
+                foot.transform.SetParent(root.transform, false);
+                foot.transform.localPosition = Vector3.down;
+                var solver = new RootMotionSolver();
+                solver.Initialize(root.transform, foot.transform, null);
+                solver.Enabled = true;
+                SetField(controller, "rootSolver", solver);
+
+                root.transform.position = Vector3.zero;
+                controller.SetRootMotionEnabledForTraining(false);
+                Check(!solver.Enabled, "S1 未关闭根节点补偿");
+                Near(2f, root.transform.position.y);
+
+                controller.SetRootMotionEnabledForTraining(true);
+                Check(solver.Enabled, "离开 S1 后未恢复根节点补偿能力");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         private static void LowerBodyJumpGuard()
         {
             var config = ScriptableObject.CreateInstance<MotionCaptureConfig>();
@@ -575,6 +674,9 @@ namespace RehabPhotoGame.Editor
 
         private static T Field<T>(object instance, string name) =>
             (T)instance.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(instance);
+
+        private static void SetField(object instance, string name, object value) =>
+            instance.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).SetValue(instance, value);
 
         private static void Equal<T>(T expected, T actual) =>
             Check(Equals(expected, actual), $"expected={expected}; actual={actual}");

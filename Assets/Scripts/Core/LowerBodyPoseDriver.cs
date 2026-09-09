@@ -140,18 +140,10 @@ public sealed class LowerBodyPoseDriver
         DriveThigh(LeftThighIndex, 0, sensorRotations, targets);
         DriveThigh(RightThighIndex, 1, sensorRotations, targets);
 
-        bool leftCalfFresh = IsFresh(LeftCalfIndex, inputFresh);
-        bool rightCalfFresh = IsFresh(RightCalfIndex, inputFresh);
-        if (!leftCalfFresh && rightCalfFresh)
-        {
-            DriveCalf(RightCalfIndex, 1, sensorRotations, targets, inputFresh);
-            DriveCalf(LeftCalfIndex, 0, sensorRotations, targets, inputFresh);
-        }
-        else
-        {
-            DriveCalf(LeftCalfIndex, 0, sensorRotations, targets, inputFresh);
-            DriveCalf(RightCalfIndex, 1, sensorRotations, targets, inputFresh);
-        }
+        // 两条小腿必须彼此独立。掉线腿只保持自己的最后可信膝角，
+        // 因而这里不再根据另一条腿的新鲜度改变计算顺序。
+        DriveCalf(LeftCalfIndex, 0, sensorRotations, targets, inputFresh);
+        DriveCalf(RightCalfIndex, 1, sensorRotations, targets, inputFresh);
     }
 
     /// <summary>
@@ -312,25 +304,9 @@ public sealed class LowerBodyPoseDriver
         }
         else
         {
-            int otherLeg = 1 - leg;
-            int otherDeviceIndex = otherLeg == 0 ? LeftCalfIndex : RightCalfIndex;
-
-            if (deviceIndex == RightCalfIndex && calibrated[slot])
-            {
-                kneeFlexion = kneeFlexionDeg[leg];
-            }
-            else if (IsFresh(otherDeviceIndex, inputFresh))
-            {
-                kneeFlexion = kneeFlexionDeg[otherLeg];
-            }
-            else if (calibrated[slot])
-            {
-                kneeFlexion = kneeFlexionDeg[leg];
-            }
-            else
-            {
-                kneeFlexion = Mathf.Max(0f, thighFlexionDeg[leg]);
-            }
+            // 传感器失效时只能保持本腿最后一次可信膝角。
+            // 禁止读取另一条腿，否则单腿前踢会被复制成双腿同时伸直。
+            kneeFlexion = calibrated[slot] ? kneeFlexionDeg[leg] : 0f;
         }
 
         kneeFlexion = Mathf.Clamp(

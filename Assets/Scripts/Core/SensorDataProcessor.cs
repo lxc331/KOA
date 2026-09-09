@@ -54,6 +54,19 @@ public class SensorDataProcessor
     public string LastSyncStatus { get; private set; } = "not_started";
     public int CalibrationVersion { get; private set; }
 
+    /// <summary>读取指定设备最后一帧的实时帧龄；从未收帧或索引无效时返回 -1。</summary>
+    public float GetDeviceFrameAgeSeconds(int deviceIndex, float now)
+    {
+        if (deviceIndex < 0 || deviceIndex >= deviceCount ||
+            receivedFrameCounts[deviceIndex] <= 0)
+            return -1f;
+
+        float age = now - lastFrameRealtimeSeconds[deviceIndex];
+        return age >= 0f && !float.IsNaN(age) && !float.IsInfinity(age)
+            ? age
+            : -1f;
+    }
+
     /// <summary>只读采样：游戏独立检查真实收帧时间，不改变现有骨骼驱动行为。</summary>
     public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
         float now, float timeoutSeconds, float maxSkewSeconds)

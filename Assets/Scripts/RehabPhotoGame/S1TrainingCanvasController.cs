@@ -528,7 +528,8 @@ namespace RehabPhotoGame
                 string status = !state.IsConnected ? "未连接" :
                     !state.HasAnyData ? "等待传感器数据" :
                     !state.IsCalibrated ? "正在准备标定" :
-                    !state.IsDriving ? "等待开始动捕" : "动捕已就绪";
+                    !state.IsDriving ? "等待开始动捕" :
+                    HasStaleLowerBodySensor(state) ? "传感器信号异常" : "动捕已就绪";
                 connectionText.text = "设备状态：" + status;
                 sensorText.text = "传感器：" + DeviceChip(state, 5, "06") + "   " +
                                   DeviceChip(state, 6, "07") + "   " +
@@ -799,12 +800,37 @@ namespace RehabPhotoGame
                    (motionUI != null && motionUI.CanBeginDrivingFromFormalUI);
         }
 
-        private static string DeviceChip(MotionCaptureState state, int index, string label)
+        private string DeviceChip(MotionCaptureState state, int index, string label)
         {
-            bool ready = state != null && state.GetDeviceHasData(index);
-            return ready
-                ? $"<color=#55A96F>{label} ●</color>"
-                : $"<color=#C7D1CB>{label} ○</color>";
+            if (state == null || !state.GetDeviceHasData(index) || motionCapture == null)
+                return $"<color=#C7D1CB>{label} ○</color>";
+
+            float age = motionCapture.GetDeviceFrameAgeSeconds(index);
+            if (age < 0f)
+                return $"<color=#C7D1CB>{label} ○</color>";
+
+            float timeout = training != null ? training.SensorTimeoutSeconds : 2.2f;
+            float slowThreshold = Mathf.Max(1f, timeout * 0.6f);
+            if (age <= slowThreshold)
+                return $"<color=#55A96F>{label} ●</color>";
+            if (age <= timeout)
+                return $"<color=#D9A441>{label} ●</color>";
+            return $"<color=#D45B50>{label} ○</color>";
+        }
+
+        private bool HasStaleLowerBodySensor(MotionCaptureState state)
+        {
+            if (state == null || motionCapture == null) return true;
+            float timeout = training != null ? training.SensorTimeoutSeconds : 2.2f;
+            for (int index = LowerBodyPoseDriver.LeftThighIndex;
+                 index <= LowerBodyPoseDriver.RightCalfIndex;
+                 index++)
+            {
+                float age = motionCapture.GetDeviceFrameAgeSeconds(index);
+                if (!state.GetDeviceHasData(index) || age < 0f || age > timeout)
+                    return true;
+            }
+            return false;
         }
 
         private static string LegName(TrainingLeg leg) =>

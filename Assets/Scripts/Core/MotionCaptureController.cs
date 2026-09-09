@@ -72,6 +72,12 @@ public class MotionCaptureController : MonoBehaviour
     /// <summary>根节点垂直位移补偿器（解决下蹲悬浮问题）</summary>
     private RootMotionSolver rootSolver;
 
+    /// <summary>
+    /// 当前训练模式是否允许根节点补偿。S1 坐位伸膝关闭，后续坐站/浅蹲可重新开启。
+    /// 配置资产中的 rootMotionEnabled 仍是总开关。
+    /// </summary>
+    private bool rootMotionEnabledForTraining = true;
+
     // ═══════════════════════════════════════════════════════════════
     //  骨骼与角色数据
     // ═══════════════════════════════════════════════════════════════
@@ -107,6 +113,30 @@ public class MotionCaptureController : MonoBehaviour
 
     /// <summary>获取当前日志导出目录路径（UI 文本框显示用）</summary>
     public string GetExportDirectory() => logger?.GetExportDirectory() ?? "";
+
+    /// <summary>读取设备最后一帧的实时帧龄；从未收帧或索引无效时返回 -1。</summary>
+    public float GetDeviceFrameAgeSeconds(int deviceIndex)
+    {
+        return processor != null
+            ? processor.GetDeviceFrameAgeSeconds(deviceIndex, Time.realtimeSinceStartup)
+            : -1f;
+    }
+
+    /// <summary>诊断/回归测试：当前训练模式是否允许根节点补偿。</summary>
+    public bool RootMotionEnabledForTraining => rootMotionEnabledForTraining;
+
+    /// <summary>诊断/回归测试：根节点补偿当前是否实际运行。</summary>
+    public bool IsRootMotionCompensationActive => rootSolver != null && rootSolver.Enabled;
+
+    /// <summary>
+    /// 按训练模式切换根节点补偿。关闭前先清除已有偏移并把人物根节点复位；
+    /// S1 坐位伸膝传 false，坐站/浅蹲等需要贴地的模式传 true。
+    /// </summary>
+    public void SetRootMotionEnabledForTraining(bool enabled)
+    {
+        rootMotionEnabledForTraining = enabled;
+        ApplyRootMotionTrainingMode();
+    }
 
     /// <summary>游戏只读入口；未连接、未驱动时不向游戏提供可判定的姿态。</summary>
     public RehabPhotoGame.LowerBodyMeasurement ReadLowerBodyMeasurement(
@@ -567,7 +597,18 @@ public class MotionCaptureController : MonoBehaviour
             config.rootMotionHorizontalEnabled,
             config.rootMotionHorizontalSmoothSpeed,
             config.rootMotionMaxHorizontalOffset);
-        rootSolver.Enabled = true;
+        ApplyRootMotionTrainingMode();
+    }
+
+    private void ApplyRootMotionTrainingMode()
+    {
+        if (rootSolver == null) return;
+
+        bool shouldEnable = config != null && config.rootMotionEnabled &&
+            rootSolver.IsInitialized && rootMotionEnabledForTraining;
+        if (!shouldEnable && rootSolver.Enabled)
+            rootSolver.Reset();
+        rootSolver.Enabled = shouldEnable;
     }
 
     /// <summary>
@@ -602,6 +643,5 @@ public class MotionCaptureController : MonoBehaviour
         return go.transform.GetChild(0);    // 取第一个子节点
     }
 }
-
 
 

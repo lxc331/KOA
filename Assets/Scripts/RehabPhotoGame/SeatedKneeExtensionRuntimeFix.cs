@@ -128,6 +128,11 @@ namespace RehabPhotoGame
             }
         }
 
+        /// <summary>供正式界面按同一超时门限显示 06～09 的实时状态。</summary>
+        public float SensorTimeoutSeconds => settings != null
+            ? settings.sensorTimeoutSeconds
+            : 2.2f;
+
         public void SetTechnicalOverlayVisible(bool visible)
         {
             showTechnicalOverlay = visible;
@@ -188,6 +193,8 @@ namespace RehabPhotoGame
         private void Start()
         {
             motionCapture = FindObjectOfType<MotionCaptureController>();
+            // S1 是坐位伸膝；根节点贴地补偿只留给后续坐站/浅蹲模式。
+            motionCapture?.SetRootMotionEnabledForTraining(false);
             motionUI = motionCapture != null ? motionCapture.GetComponent<MotionCaptureUI>() : null;
             if (motionUI != null)
                 motionUI.OnResetRequested += HandleFullReset;
@@ -542,6 +549,8 @@ namespace RehabPhotoGame
 
         private void OnDisable()
         {
+            // 离开 S1 后恢复训练模式开关，后续坐站/浅蹲仍可使用配置中的根节点补偿。
+            motionCapture?.SetRootMotionEnabledForTraining(true);
             StopSpeech();
             leftEvaluator?.Reset(TrainingLeg.Left, false);
             rightEvaluator?.Reset(TrainingLeg.Right, false);
