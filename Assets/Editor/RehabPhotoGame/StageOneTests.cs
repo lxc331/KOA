@@ -15,11 +15,14 @@ namespace RehabPhotoGame.Editor
             Run("实际采样接口按当前时钟检测断流", ProcessorFreshness);
             Run("四元数角度提取、左右符号和人物判定一致", QuaternionMeasurements);
             Run("单侧小腿掉线不会复制另一侧膝角", CrossLegDropoutDoesNotMirror);
+            Run("左右腿坐姿校正映射到同一视觉基准", SharedSeatedPoseCalibration);
+            Run("站直后自动解除坐姿视觉锁定", StandingPoseExit);
             Run("S1 可关闭根节点补偿且后续训练可恢复", RootMotionTrainingGate);
+            Run("坐姿高度锁定后不再跟随抬腿变化", RootMotionSeatedHeightLock);
             Run("下肢突跳需连续帧确认后恢复", LowerBodyJumpGuard);
             Run("远景素材与对焦 Shader 可由 Resources 加载", PhotoResources);
             Run("S1 正式 Canvas 可创建且不显示原始遥测", FormalCanvasSmoke);
-            Debug.Log("[Stage1 tests] PASS: 31 regression scenarios.");
+            Debug.Log("[Stage1 tests] PASS: 34 regression scenarios.");
         }
 
         public static void RunLogicTests()
@@ -532,6 +535,37 @@ namespace RehabPhotoGame.Editor
                 Quaternion q = rotations[8];
                 rotations[8] = new Quaternion(-q.x, -q.y, -q.z, -q.w);
                 driver.TryMeasureLeg(1, rotations, out thighDeg, out kneeDeg); Near(30f, kneeDeg);
+                // Exercise the rendered segment directions through a full
+                // seated -> kick -> standing -> half squat transition.
+                driver.ConfigureSeatedLegCalibration(0, 90f, 0f, 90f, 90f, 90f);
+                driver.ConfigureSeatedLegCalibration(1, 90f, 0f, 90f, 90f, 90f);
+                driver.SetSeatedTrainingVisual(true, 0, false, 90f, 90f);
+                rotations[6] = rotations[8] = Quaternion.identity;
+                bool[] fresh = { false, false, false, false, false, true, true, true, true };
+                driver.ConstrainTargets(rotations, targets, fresh);
+                Near(0f, Vector3.Angle(Vector3.down, targets[6] * Vector3.down));
+                Near(0f, Vector3.Angle(Vector3.down, targets[8] * Vector3.down));
+                rotations[6] = rotations[5];
+                driver.ConstrainTargets(rotations, targets, fresh);
+                Near(0f, Vector3.Angle(Vector3.forward, targets[6] * Vector3.down));
+                Near(0f, Vector3.Angle(Vector3.down, targets[8] * Vector3.down));
+                for (int i = 5; i <= 8; i++) rotations[i] = Quaternion.identity;
+                driver.ConstrainTargets(rotations, targets, fresh);
+                for (int i = 5; i <= 8; i++)
+                    Near(0f, Vector3.Angle(Vector3.down, targets[i] * Vector3.down));
+                driver.SetSeatedTrainingVisual(false, 0, false, 90f, 90f);
+                rotations[5] = rotations[7] = Quaternion.AngleAxis(-40f, Vector3.right);
+                rotations[6] = Quaternion.AngleAxis(20f, Vector3.right);
+                rotations[8] = Quaternion.AngleAxis(-20f, Vector3.right);
+                driver.ConstrainTargets(rotations, targets, fresh);
+                Near(0f, Quaternion.Angle(targets[5], targets[7]));
+                Near(0f, Quaternion.Angle(targets[6], targets[8]));
+                driver.ConfigureSeatedLegCalibration(0, 60f, 0f, 40f, 90f, 90f);
+                driver.ConstrainTargets(rotations, targets, fresh);
+                float cached = Field<float[]>(driver, "kneeFlexionDeg")[0];
+                fresh[6] = false;
+                for (int i = 0; i < 20; i++) driver.ConstrainTargets(rotations, targets, fresh);
+                Near(cached, Field<float[]>(driver, "kneeFlexionDeg")[0]);
                 rotations[6] = Quaternion.AngleAxis(90f, Vector3.forward);
                 Check(!driver.TryMeasureLeg(0, rotations, out thighDeg, out kneeDeg), "横向退化投影被当成伸直");
             }
@@ -633,6 +667,97 @@ namespace RehabPhotoGame.Editor
             }
             finally
             {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void SharedSeatedPoseCalibration()
+        {
+            var config = ScriptableObject.CreateInstance<MotionCaptureConfig>();
+            try
+            {
+                var driver = new LowerBodyPoseDriver(config);
+                driver.ConfigureSeatedLegCalibration(0, 73f, 0f, 69f, 78f, 72f);
+                driver.ConfigureSeatedLegCalibration(1, 83f, 17f, 79f, 78f, 72f);
+
+                MethodInfo knee = typeof(LowerBodyPoseDriver).GetMethod(
+                    "CorrectKneeFlexion", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo thigh = typeof(LowerBodyPoseDriver).GetMethod(
+                    "CorrectThighFlexion", BindingFlags.NonPublic | BindingFlags.Instance);
+                MethodInfo hold = typeof(LowerBodyPoseDriver).GetMethod(
+                    "ShouldHoldSharedSeatedPose", BindingFlags.NonPublic | BindingFlags.Instance);
+                Check(knee != null && thigh != null && hold != null,
+                    "找不到坐姿校正入口");
+
+                Near(78f, (float)knee.Invoke(driver, new object[] { 0, 73f }));
+                Near(78f, (float)knee.Invoke(driver, new object[] { 1, 83f }));
+                Near(72f, (float)thigh.Invoke(driver, new object[] { 0, 69f }));
+                Near(72f, (float)thigh.Invoke(driver, new object[] { 1, 79f }));
+
+                driver.SetSeatedTrainingVisual(true, 0, false, 72f, 78f);
+                Check(!(bool)hold.Invoke(driver, new object[] { 0 }),
+                    "训练腿不应被锁死");
+                Check((bool)hold.Invoke(driver, new object[] { 1 }),
+                    "支撑腿应保持共享坐姿");
+                driver.SetSeatedTrainingVisual(true, 0, true, 72f, 78f);
+                Check((bool)hold.Invoke(driver, new object[] { 0 }),
+                    "切腿期间两腿都应保持共享坐姿");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(config); }
+        }
+
+        private static void StandingPoseExit()
+        {
+            MethodInfo standing = typeof(SeatedKneeExtensionRuntimeFix).GetMethod(
+                "IsStandingPose", BindingFlags.NonPublic | BindingFlags.Static);
+            Check(standing != null, "找不到站起退出判定入口");
+
+            var standingRight = new LowerBodyMeasurement
+            {
+                IsValid = true,
+                RightThighDeg = 12f,
+                RightKneeDeg = 8f
+            };
+            Check((bool)standing.Invoke(null, new object[] { standingRight, TrainingLeg.Right }),
+                "站直姿态应解除坐姿锁定");
+
+            var kickingRight = new LowerBodyMeasurement
+            {
+                IsValid = true,
+                RightThighDeg = 70f,
+                RightKneeDeg = 0f
+            };
+            Check(!(bool)standing.Invoke(null, new object[] { kickingRight, TrainingLeg.Right }),
+                "前踢时膝盖伸直不应误判为站起");
+        }
+
+        private static void RootMotionSeatedHeightLock()
+        {
+            var root = new GameObject("Stage1 seated root lock");
+            var foot = new GameObject("Stage1 seated root lock foot");
+            try
+            {
+                root.transform.position = new Vector3(0f, 2f, 0f);
+                foot.transform.SetParent(root.transform, false);
+                foot.transform.localPosition = Vector3.down;
+                var solver = new RootMotionSolver();
+                solver.Initialize(root.transform, foot.transform, null);
+                solver.Enabled = true;
+                SetField(solver, "currentOffset", -0.5f);
+                solver.LockCurrentVerticalOffset();
+                Check(solver.IsVerticalOffsetLocked, "坐姿高度未锁定");
+
+                foot.transform.localPosition = Vector3.up;
+                solver.ResetRootPosition();
+                solver.SolveAndApply();
+                Near(1.5f, root.transform.position.y);
+
+                solver.UnlockVerticalOffset();
+                Check(!solver.IsVerticalOffsetLocked, "坐姿高度无法解锁");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(foot);
                 UnityEngine.Object.DestroyImmediate(root);
             }
         }

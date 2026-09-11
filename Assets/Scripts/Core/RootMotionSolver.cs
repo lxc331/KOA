@@ -64,6 +64,8 @@ public class RootMotionSolver
     /// <summary>诊断日志：初始化时记录的脚部地面高度。</summary>
     public float GroundY => groundY;
 
+    public bool IsVerticalOffsetLocked => verticalOffsetLocked;
+
     // ═══════════════════════════════════════════════════════════════
     //  内部字段
     // ═══════════════════════════════════════════════════════════════
@@ -76,6 +78,14 @@ public class RootMotionSolver
 
     /// <summary>右脚骨骼 Transform（Bip01 R Foot）</summary>
     private Transform rightFoot;
+
+    private float leftFootGroundClearance;
+    private float rightFootGroundClearance;
+    private bool hasLeftGroundReference;
+    private bool hasRightGroundReference;
+    private bool groundLeftFoot = true;
+    private bool groundRightFoot = true;
+    private readonly RaycastHit[] groundHits = new RaycastHit[16];
 
     // ── T-Pose 时的参考值 ──
     /// <summary>T-Pose 时角色根节点的世界坐标（复位基准）</summary>
@@ -93,6 +103,8 @@ public class RootMotionSolver
 
     /// <summary>当前帧实际应用的平滑后垂直偏移量</summary>
     private float currentOffset;
+    private bool verticalOffsetLocked;
+    private float lockedVerticalOffset;
 
     // ── 水平补偿 ──
     /// <summary>水平补偿总开关</summary>
@@ -160,7 +172,19 @@ public class RootMotionSolver
         originalRootPos = root.position;
         groundY = ComputeLowestFootY();
         groundXZ = ComputeFootMidpointXZ();
+        CaptureFootGroundReference(
+            leftFoot,
+            ref leftFootGroundClearance,
+            ref hasLeftGroundReference);
+        CaptureFootGroundReference(
+            rightFoot,
+            ref rightFootGroundClearance,
+            ref hasRightGroundReference);
         currentOffset = 0f;
+        lockedVerticalOffset = 0f;
+        verticalOffsetLocked = false;
+        groundLeftFoot = true;
+        groundRightFoot = true;
         currentHorizontalOffset = Vector2.zero;
         initialized = true;
 
@@ -196,12 +220,22 @@ public class RootMotionSolver
         if (!initialized || !Enabled || avatarRoot == null) return;
 
         // ── 垂直补偿 ──
-        float lowestFootY = ComputeLowestFootY();
-        float targetOffset = groundY - lowestFootY;
-        targetOffset = Mathf.Clamp(targetOffset, -maxDropDistance, 0f);
-
         float alpha = 1f - Mathf.Exp(-smoothSpeed * Time.deltaTime);
-        currentOffset = Mathf.Lerp(currentOffset, targetOffset, alpha);
+        float targetOffset;
+        if (verticalOffsetLocked)
+        {
+            targetOffset = lockedVerticalOffset;
+            currentOffset = lockedVerticalOffset;
+        }
+        else
+        {
+            targetOffset = ComputeGroundedTargetOffset();
+            targetOffset = Mathf.Clamp(targetOffset, -maxDropDistance, 0f);
+            currentOffset = Mathf.Lerp(currentOffset, targetOffset, alpha);
+            // Moving upward must resolve penetration immediately; smoothing
+            // downward can otherwise leave the sole below the floor on rising.
+            currentOffset = Mathf.Max(currentOffset, targetOffset);
+        }
 
         if (Mathf.Abs(currentOffset) < 0.0005f && Mathf.Abs(targetOffset) < 0.0005f)
             currentOffset = 0f;
@@ -232,6 +266,25 @@ public class RootMotionSolver
         avatarRoot.position = pos;
     }
 
+    public void SetGroundedFeet(bool leftGrounded, bool rightGrounded)
+    {
+        groundLeftFoot = leftGrounded;
+        groundRightFoot = rightGrounded;
+    }
+
+    public void LockCurrentVerticalOffset()
+    {
+        if (!initialized || !Enabled) return;
+        lockedVerticalOffset = Mathf.Clamp(currentOffset, -maxDropDistance, 0f);
+        currentOffset = lockedVerticalOffset;
+        verticalOffsetLocked = true;
+    }
+
+    public void UnlockVerticalOffset()
+    {
+        verticalOffsetLocked = false;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  重置
     // ═══════════════════════════════════════════════════════════════
@@ -243,6 +296,10 @@ public class RootMotionSolver
     public void Reset()
     {
         currentOffset = 0f;
+        lockedVerticalOffset = 0f;
+        verticalOffsetLocked = false;
+        groundLeftFoot = true;
+        groundRightFoot = true;
         currentHorizontalOffset = Vector2.zero;
         if (avatarRoot != null)
             avatarRoot.position = originalRootPos;
@@ -279,8 +336,8 @@ public class RootMotionSolver
     /// </summary>
     private Vector2 ComputeFootMidpointXZ()
     {
-        bool hasL = leftFoot != null;
-        bool hasR = rightFoot != null;
+        bool hasL = groundLeftFoot && leftFoot != null;
+        bool hasR = groundRightFoot && rightFoot != null;
 
         if (hasL && hasR)
         {
@@ -314,7 +371,94 @@ public class RootMotionSolver
         // 返回地面参考，不产生偏移
         return groundY;
     }
+
+    private float ComputeGroundedTargetOffset()
+    {
+        float sum = float.NegativeInfinity;
+        int count = 0;
+        if (groundLeftFoot && TryComputeFootGroundOffset(
+            leftFoot, leftFootGroundClearance, hasLeftGroundReference,
+            out float leftOffset))
+        {
+            sum = Mathf.Max(sum, leftOffset);
+            count++;
+        }
+        if (groundRightFoot && TryComputeFootGroundOffset(
+            rightFoot, rightFootGroundClearance, hasRightGroundReference,
+            out float rightOffset))
+        {
+            sum = Mathf.Max(sum, rightOffset);
+            count++;
+        }
+        if (count > 0)
+            return sum;
+
+        // 没有可命中的 Terrain/Collider 时仍尊重支撑脚选择，不能退回到
+        // “两脚中较低者”，否则抬起的训练腿又会把整个人带着移动。
+        sum = float.NegativeInfinity;
+        count = 0;
+        if (groundLeftFoot && leftFoot != null)
+        {
+            sum = Mathf.Max(sum, groundY - leftFoot.position.y);
+            count++;
+        }
+        if (groundRightFoot && rightFoot != null)
+        {
+            sum = Mathf.Max(sum, groundY - rightFoot.position.y);
+            count++;
+        }
+        return count > 0 ? sum : 0f;
+    }
+
+    private void CaptureFootGroundReference(
+        Transform foot,
+        ref float groundClearance,
+        ref bool hasGroundReference)
+    {
+        if (foot == null) return;
+        if (TryGetGroundBelow(foot.position, out RaycastHit hit))
+        {
+            groundClearance = foot.position.y - hit.point.y;
+            hasGroundReference = true;
+        }
+    }
+
+    private bool TryComputeFootGroundOffset(
+        Transform foot,
+        float referenceClearance,
+        bool hasReference,
+        out float offset)
+    {
+        offset = 0f;
+        if (foot == null || !hasReference ||
+            !TryGetGroundBelow(foot.position, out RaycastHit hit))
+            return false;
+        offset = hit.point.y + referenceClearance - foot.position.y;
+        return !float.IsNaN(offset) && !float.IsInfinity(offset);
+    }
+
+    private bool TryGetGroundBelow(Vector3 footPosition, out RaycastHit groundHit)
+    {
+        Vector3 origin = footPosition + Vector3.up * 0.75f;
+        int hitCount = Physics.RaycastNonAlloc(
+            origin, Vector3.down, groundHits, 2.5f, ~0,
+            QueryTriggerInteraction.Ignore);
+        bool found = false;
+        float nearestDistance = float.PositiveInfinity;
+        groundHit = default;
+        for (int i = 0; i < hitCount; i++)
+        {
+            Transform hitTransform = groundHits[i].transform;
+            if (hitTransform == null ||
+                (avatarRoot != null &&
+                 (hitTransform == avatarRoot || hitTransform.IsChildOf(avatarRoot))))
+                continue;
+            if (groundHits[i].distance >= nearestDistance) continue;
+            nearestDistance = groundHits[i].distance;
+            groundHit = groundHits[i];
+            found = true;
+        }
+        return found;
+    }
+
 }
-
-
-

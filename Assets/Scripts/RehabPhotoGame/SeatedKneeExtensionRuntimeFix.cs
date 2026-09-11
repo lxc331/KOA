@@ -32,10 +32,15 @@ namespace RehabPhotoGame
         private const float SwitchSettleSeconds = 1.6f;
         private const int SwitchRequiredSamples = 2;
         private const float SpeechGapSeconds = 4.5f;
+        private const float LeftRawStraightReferenceDeg = 0f;
         private const float RightRawStraightReferenceDeg = 17f;
+        private const float SeatedHeightSettleSeconds = 0.75f;
         private const float AutoLegMotionThresholdDeg = 10f;
         private const float AutoLegDominance = 2.5f;
         private const float AutoLegConfirmSeconds = 0.45f;
+        private const float StandingExitThighDeg = 35f;
+        private const float StandingExitKneeDeg = 30f;
+        private const float StandingExitConfirmSeconds = 0.6f;
 
         private MotionCaptureController motionCapture;
         private MotionCaptureUI motionUI;
@@ -53,6 +58,13 @@ namespace RehabPhotoGame
         private int switchKneeCount;
         private float switchThighSum;
         private int switchThighCount;
+
+        private bool seatedPoseEstablished;
+        private bool seatedHeightLocked;
+        private float seatedHeightLockAt = float.PositiveInfinity;
+        private float sharedSeatedThighDeg = 90f;
+        private float sharedReadyKneeDeg = 90f;
+        private float standingCandidateSince = float.NaN;
 
         private float rightRawReadyDeg = float.NaN;
         private float rawRightKneeDeg = float.NaN;
@@ -193,8 +205,8 @@ namespace RehabPhotoGame
         private void Start()
         {
             motionCapture = FindObjectOfType<MotionCaptureController>();
-            // S1 是坐位伸膝；根节点贴地补偿只留给后续坐站/浅蹲模式。
-            motionCapture?.SetRootMotionEnabledForTraining(false);
+            // 坐下后只允许求解一次共同高度；锁定后切腿和抬腿都不会再改根高度。
+            motionCapture?.SetRootMotionEnabledForTraining(true);
             motionUI = motionCapture != null ? motionCapture.GetComponent<MotionCaptureUI>() : null;
             if (motionUI != null)
                 motionUI.OnResetRequested += HandleFullReset;
@@ -247,6 +259,7 @@ namespace RehabPhotoGame
 
             if (sessionPaused)
             {
+                UpdateSeatedVisualAndGrounding(now);
                 LogDiagnostic(now, "session_paused");
                 return;
             }
@@ -254,6 +267,7 @@ namespace RehabPhotoGame
             if (switchingLeg)
             {
                 UpdateSwitching(now);
+                UpdateSeatedVisualAndGrounding(now);
                 LogDiagnostic(now, "switching");
                 return;
             }
@@ -267,6 +281,7 @@ namespace RehabPhotoGame
             if (!transientPoseGap)
                 ActiveEvaluator.Update(sample, now);
 
+            UpdateSeatedVisualAndGrounding(now);
             HandleActionVoice();
             LogDiagnostic(now,
                 transientPoseGap ? "pose_gap" : FailureCategory(ActiveEvaluator.BlockReason));
@@ -350,11 +365,10 @@ namespace RehabPhotoGame
                         ? sample.RightKneeDeg
                         : sample.LeftKneeDeg;
                     switchKneeCount++;
-                    if (trainingLeg == TrainingLeg.Right)
-                    {
-                        switchThighSum += sample.RightThighDeg;
-                        switchThighCount++;
-                    }
+                    switchThighSum += trainingLeg == TrainingLeg.Right
+                        ? sample.RightThighDeg
+                        : sample.LeftThighDeg;
+                    switchThighCount++;
                 }
                 else
                 {
@@ -370,19 +384,40 @@ namespace RehabPhotoGame
                 switchSamples < SwitchRequiredSamples || !sample.IsValid)
                 return;
 
-            if (trainingLeg == TrainingLeg.Right &&
-                switchKneeCount > 0 && switchThighCount > 0)
+            if (switchKneeCount > 0 && switchThighCount > 0)
             {
-                rightRawReadyDeg = switchKneeSum / switchKneeCount;
-                float rightRawSeatedThighDeg = switchThighSum / switchThighCount;
-                motionCapture.ConfigureRightLegCalibration(
-                    rightRawReadyDeg,
-                    RightRawStraightReferenceDeg,
-                    rightRawSeatedThighDeg);
+                int legIndex = trainingLeg == TrainingLeg.Right ? 1 : 0;
+                float rawReadyDeg = switchKneeSum / switchKneeCount;
+                float rawSeatedThighDeg = switchThighSum / switchThighCount;
+                if (!seatedPoseEstablished)
+                {
+                    // 第一次真实稳定坐姿就是整场训练唯一的视觉基准。
+                    // 两侧骨骼使用同样的髋、膝角，避免左右脚高度不一致。
+                    sharedReadyKneeDeg = 90f;
+                    sharedSeatedThighDeg = 90f;
+                    seatedPoseEstablished = true;
+                    seatedHeightLocked = false;
+                    seatedHeightLockAt = now + SeatedHeightSettleSeconds;
+                }
+
+                float straightReference = trainingLeg == TrainingLeg.Right
+                    ? RightRawStraightReferenceDeg
+                    : LeftRawStraightReferenceDeg;
+                motionCapture.ConfigureSeatedLegCalibration(
+                    legIndex,
+                    rawReadyDeg,
+                    straightReference,
+                    rawSeatedThighDeg,
+                    sharedReadyKneeDeg,
+                    sharedSeatedThighDeg);
+
+                if (trainingLeg == TrainingLeg.Right)
+                    rightRawReadyDeg = rawReadyDeg;
                 motionCapture.LogGameDiagnostic(
-                    "right_ready_calibrated",
-                    $"rawReady={rightRawReadyDeg:F1}, straightRef={RightRawStraightReferenceDeg:F1}, " +
-                    $"seatedThigh={rightRawSeatedThighDeg:F1}");
+                    "leg_pose_calibrated",
+                    $"leg={trainingLeg}, rawReady={rawReadyDeg:F1}, " +
+                    $"straightRef={straightReference:F1}, rawThigh={rawSeatedThighDeg:F1}, " +
+                    $"sharedReady={sharedReadyKneeDeg:F1}, sharedThigh={sharedSeatedThighDeg:F1}");
             }
 
             switchingLeg = false;
@@ -391,6 +426,84 @@ namespace RehabPhotoGame
             motionCapture.LogGameDiagnostic(
                 "leg_ready",
                 $"leg={trainingLeg}, sensors={SensorPairLabel()}");
+        }
+
+        private void UpdateSeatedVisualAndGrounding(float now)
+        {
+            if (seatedPoseEstablished && IsStandingPose(sample, trainingLeg))
+            {
+                if (float.IsNaN(standingCandidateSince))
+                {
+                    standingCandidateSince = now;
+                }
+                else if (now - standingCandidateSince >= StandingExitConfirmSeconds)
+                {
+                    ExitSeatedPoseForStanding();
+                    return;
+                }
+            }
+            else
+            {
+                standingCandidateSince = float.NaN;
+            }
+
+            int selectedLeg = trainingLeg == TrainingLeg.Right ? 1 : 0;
+            bool holdBothLegs = switchingLeg || sessionPaused;
+            motionCapture.SetSeatedTrainingVisual(
+                seatedPoseEstablished,
+                selectedLeg,
+                holdBothLegs,
+                sharedSeatedThighDeg,
+                sharedReadyKneeDeg);
+
+            if (!seatedPoseEstablished || holdBothLegs)
+            {
+                motionCapture.SetGroundedFeet(true, true);
+            }
+            else
+            {
+                // 训练腿抬起后不再参与高度求解；只以自然垂落的支撑腿为准。
+                motionCapture.SetGroundedFeet(
+                    trainingLeg == TrainingLeg.Right,
+                    trainingLeg == TrainingLeg.Left);
+            }
+
+            // Keep solving against the supporting foot through sit/stand and
+            // squat transitions. A saved root height cannot follow those poses.
+            motionCapture.UnlockSeatedVerticalOffset();
+            seatedHeightLocked = false;
+        }
+
+        private static bool IsStandingPose(LowerBodyMeasurement measurement, TrainingLeg leg)
+        {
+            if (!measurement.IsValid) return false;
+
+            float thigh = leg == TrainingLeg.Right
+                ? measurement.RightThighDeg
+                : measurement.LeftThighDeg;
+            float knee = leg == TrainingLeg.Right
+                ? measurement.RightKneeDeg
+                : measurement.LeftKneeDeg;
+            return Mathf.Abs(thigh) <= StandingExitThighDeg &&
+                   knee <= StandingExitKneeDeg;
+        }
+
+        private void ExitSeatedPoseForStanding()
+        {
+            seatedPoseEstablished = false;
+            seatedHeightLocked = false;
+            seatedHeightLockAt = float.PositiveInfinity;
+            standingCandidateSince = float.NaN;
+            sharedSeatedThighDeg = 90f;
+            sharedReadyKneeDeg = 90f;
+            motionCapture?.SetSeatedTrainingVisual(false, 0, false, 90f, 90f);
+            motionCapture?.ClearSeatedLegCalibration(0);
+            motionCapture?.ClearSeatedLegCalibration(1);
+            motionCapture?.SetGroundedFeet(true, true);
+            motionCapture?.UnlockSeatedVerticalOffset();
+            motionCapture?.LogGameDiagnostic(
+                "seated_pose_released_for_standing", $"leg={trainingLeg}");
+            BeginLegSession(trainingLeg, false, "standing_exit");
         }
 
         private bool IsNaturalDownCandidate(LowerBodyMeasurement m)
@@ -418,11 +531,10 @@ namespace RehabPhotoGame
             switchThighCount = 0;
             pendingAutoLeg = TrainingLeg.Both;
             leftMotionScore = rightMotionScore = 0f;
+            int selectedLeg = trainingLeg == TrainingLeg.Right ? 1 : 0;
+            motionCapture?.ClearSeatedLegCalibration(selectedLeg);
             if (trainingLeg == TrainingLeg.Right)
-            {
                 rightRawReadyDeg = float.NaN;
-                motionCapture?.ClearRightLegCalibration();
-            }
             previousStage = ActiveEvaluator.Stage;
             lastDiagnosticKey = "";
 
@@ -530,6 +642,10 @@ namespace RehabPhotoGame
                     rawRightKneeDeg = rawRightKneeDeg,
                     rightRawReadyDeg = rightRawReadyDeg,
                     rightStraightReferenceDeg = RightRawStraightReferenceDeg,
+                    seatedPoseEstablished = seatedPoseEstablished,
+                    seatedHeightLocked = seatedHeightLocked,
+                    sharedSeatedThighDeg = sharedSeatedThighDeg,
+                    sharedReadyKneeDeg = sharedReadyKneeDeg,
                     measurement = sample
                 }));
             lastDiagnosticKey = key;
@@ -543,13 +659,27 @@ namespace RehabPhotoGame
             hasMotionBaseline = false;
             rawRightKneeDeg = float.NaN;
             rightRawReadyDeg = float.NaN;
+            seatedPoseEstablished = false;
+            seatedHeightLocked = false;
+            seatedHeightLockAt = float.PositiveInfinity;
+            sharedSeatedThighDeg = 90f;
+            sharedReadyKneeDeg = 90f;
+            standingCandidateSince = float.NaN;
+            motionCapture?.SetSeatedTrainingVisual(false, 0, false, 90f, 90f);
+            motionCapture?.ClearSeatedLegCalibration(0);
+            motionCapture?.ClearSeatedLegCalibration(1);
+            motionCapture?.SetGroundedFeet(true, true);
+            motionCapture?.UnlockSeatedVerticalOffset();
             if (leftEvaluator != null && rightEvaluator != null)
                 BeginLegSession(trainingLeg, false, "full_reset");
         }
 
         private void OnDisable()
         {
-            // 离开 S1 后恢复训练模式开关，后续坐站/浅蹲仍可使用配置中的根节点补偿。
+            motionCapture?.SetSeatedTrainingVisual(false, 0, false, 90f, 90f);
+            motionCapture?.SetGroundedFeet(true, true);
+            motionCapture?.UnlockSeatedVerticalOffset();
+            // 离开 S1 后恢复普通训练的逐帧根节点补偿。
             motionCapture?.SetRootMotionEnabledForTraining(true);
             StopSpeech();
             leftEvaluator?.Reset(TrainingLeg.Left, false);
@@ -815,9 +945,10 @@ namespace RehabPhotoGame
         {
             public string leg, stage, sensorPair, blockReason;
             public int repetitions;
-            public bool switching, sessionPaused;
+            public bool switching, sessionPaused, seatedPoseEstablished, seatedHeightLocked;
             public float holdSeconds, readyReferenceKneeDeg, targetKneeDeg;
             public float rawRightKneeDeg, rightRawReadyDeg, rightStraightReferenceDeg;
+            public float sharedSeatedThighDeg, sharedReadyKneeDeg;
             public LowerBodyMeasurement measurement;
         }
     }

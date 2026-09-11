@@ -197,6 +197,29 @@ public class SensorDataProcessor
     public void ClearRightLegCalibration() =>
         lowerBodyPoseDriver.ClearRightLegCalibration();
 
+    public void ConfigureSeatedLegCalibration(
+        int leg,
+        float rawReadyKneeDeg,
+        float rawStraightKneeDeg,
+        float rawSeatedThighDeg,
+        float targetReadyKneeDeg,
+        float targetSeatedThighDeg) =>
+        lowerBodyPoseDriver.ConfigureSeatedLegCalibration(
+            leg, rawReadyKneeDeg, rawStraightKneeDeg, rawSeatedThighDeg,
+            targetReadyKneeDeg, targetSeatedThighDeg);
+
+    public void ClearSeatedLegCalibration(int leg) =>
+        lowerBodyPoseDriver.ClearSeatedLegCalibration(leg);
+
+    public void SetSeatedTrainingVisual(
+        bool enabled,
+        int selectedLeg,
+        bool switching,
+        float sharedThighDeg,
+        float sharedKneeDeg) =>
+        lowerBodyPoseDriver.SetSeatedTrainingVisual(
+            enabled, selectedLeg, switching, sharedThighDeg, sharedKneeDeg);
+
     public void InitConstraints(Quaternion[] restLocalRotations)
     {
         this.restLocalRotations = restLocalRotations != null

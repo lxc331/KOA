@@ -73,7 +73,7 @@ public class MotionCaptureController : MonoBehaviour
     private RootMotionSolver rootSolver;
 
     /// <summary>
-    /// 当前训练模式是否允许根节点补偿。S1 坐位伸膝关闭，后续坐站/浅蹲可重新开启。
+    /// 当前训练模式是否允许根节点补偿。各训练可按自己的落地策略开关。
     /// 配置资产中的 rootMotionEnabled 仍是总开关。
     /// </summary>
     private bool rootMotionEnabledForTraining = true;
@@ -129,8 +129,7 @@ public class MotionCaptureController : MonoBehaviour
     public bool IsRootMotionCompensationActive => rootSolver != null && rootSolver.Enabled;
 
     /// <summary>
-    /// 按训练模式切换根节点补偿。关闭前先清除已有偏移并把人物根节点复位；
-    /// S1 坐位伸膝传 false，坐站/浅蹲等需要贴地的模式传 true。
+    /// 按训练模式切换根节点补偿。关闭前先清除已有偏移并把人物根节点复位。
     /// </summary>
     public void SetRootMotionEnabledForTraining(bool enabled)
     {
@@ -183,6 +182,50 @@ public class MotionCaptureController : MonoBehaviour
     public void ClearRightLegCalibration()
     {
         processor?.ClearRightLegCalibration();
+    }
+
+    public void ConfigureSeatedLegCalibration(
+        int leg,
+        float rawReadyKneeDeg,
+        float rawStraightKneeDeg,
+        float rawSeatedThighDeg,
+        float targetReadyKneeDeg,
+        float targetSeatedThighDeg)
+    {
+        processor?.ConfigureSeatedLegCalibration(
+            leg, rawReadyKneeDeg, rawStraightKneeDeg, rawSeatedThighDeg,
+            targetReadyKneeDeg, targetSeatedThighDeg);
+    }
+
+    public void ClearSeatedLegCalibration(int leg)
+    {
+        processor?.ClearSeatedLegCalibration(leg);
+    }
+
+    public void SetSeatedTrainingVisual(
+        bool enabled,
+        int selectedLeg,
+        bool switching,
+        float sharedThighDeg,
+        float sharedKneeDeg)
+    {
+        processor?.SetSeatedTrainingVisual(
+            enabled, selectedLeg, switching, sharedThighDeg, sharedKneeDeg);
+    }
+
+    public void SetGroundedFeet(bool leftGrounded, bool rightGrounded)
+    {
+        rootSolver?.SetGroundedFeet(leftGrounded, rightGrounded);
+    }
+
+    public void LockSeatedVerticalOffset()
+    {
+        rootSolver?.LockCurrentVerticalOffset();
+    }
+
+    public void UnlockSeatedVerticalOffset()
+    {
+        rootSolver?.UnlockVerticalOffset();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -643,5 +686,3 @@ public class MotionCaptureController : MonoBehaviour
         return go.transform.GetChild(0);    // 取第一个子节点
     }
 }
-
-

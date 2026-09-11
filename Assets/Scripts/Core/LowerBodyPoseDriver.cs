@@ -27,10 +27,19 @@ public sealed class LowerBodyPoseDriver
     private readonly float[] thighFlexionDeg = new float[2];
     private readonly float[] kneeFlexionDeg = new float[2];
 
-    private bool hasRightLegCalibration;
-    private float rightKneeRawReadyDeg;
-    private float rightKneeRawStraightDeg;
-    private float rightThighRawSeatedDeg;
+    private readonly bool[] hasSeatedCalibration = new bool[2];
+    private readonly float[] kneeRawReadyDeg = new float[2];
+    private readonly float[] kneeRawStraightDeg = new float[2];
+    private readonly float[] thighRawSeatedDeg = new float[2];
+    private readonly float[] calibratedReadyKneeDeg = new float[2];
+    private readonly float[] calibratedSeatedThighDeg = new float[2];
+
+    private bool seatedTrainingVisualEnabled;
+    private bool seatedTrainingVisualSwitching;
+    private int selectedTrainingLeg;
+    private float sharedSeatedThighDeg;
+    private float sharedReadyKneeDeg;
+    private float seatedBlend;
 
     private Quaternion avatarFacing = Quaternion.identity;
     private bool geometryReady;
@@ -58,10 +67,21 @@ public sealed class LowerBodyPoseDriver
         thighFlexionDeg[1] = 0f;
         kneeFlexionDeg[0] = 0f;
         kneeFlexionDeg[1] = 0f;
-        hasRightLegCalibration = false;
-        rightKneeRawReadyDeg = 0f;
-        rightKneeRawStraightDeg = 0f;
-        rightThighRawSeatedDeg = 0f;
+        for (int leg = 0; leg < 2; leg++)
+        {
+            hasSeatedCalibration[leg] = false;
+            kneeRawReadyDeg[leg] = 0f;
+            kneeRawStraightDeg[leg] = 0f;
+            thighRawSeatedDeg[leg] = 0f;
+            calibratedReadyKneeDeg[leg] = 90f;
+            calibratedSeatedThighDeg[leg] = 90f;
+        }
+        seatedTrainingVisualEnabled = false;
+        seatedTrainingVisualSwitching = false;
+        selectedTrainingLeg = 0;
+        sharedSeatedThighDeg = 90f;
+        sharedReadyKneeDeg = 90f;
+        seatedBlend = 0f;
     }
 
     public void ConfigureRightLegCalibration(
@@ -69,19 +89,57 @@ public sealed class LowerBodyPoseDriver
         float rawStraightKneeDeg,
         float rawSeatedThighDeg)
     {
-        float kneeSpan = rawReadyKneeDeg - rawStraightKneeDeg;
-        if (float.IsNaN(kneeSpan) || float.IsInfinity(kneeSpan) || kneeSpan < 35f ||
-            float.IsNaN(rawSeatedThighDeg) || float.IsInfinity(rawSeatedThighDeg))
-            return;
-        rightKneeRawReadyDeg = rawReadyKneeDeg;
-        rightKneeRawStraightDeg = rawStraightKneeDeg;
-        rightThighRawSeatedDeg = rawSeatedThighDeg;
-        hasRightLegCalibration = true;
+        ConfigureSeatedLegCalibration(
+            1, rawReadyKneeDeg, rawStraightKneeDeg, rawSeatedThighDeg, 90f, 90f);
     }
 
     public void ClearRightLegCalibration()
     {
-        hasRightLegCalibration = false;
+        ClearSeatedLegCalibration(1);
+    }
+
+    public void ConfigureSeatedLegCalibration(
+        int leg,
+        float rawReadyKneeDeg,
+        float rawStraightKneeDeg,
+        float rawSeatedThighDeg,
+        float targetReadyKneeDeg,
+        float targetSeatedThighDeg)
+    {
+        if (leg < 0 || leg > 1) return;
+        float kneeSpan = rawReadyKneeDeg - rawStraightKneeDeg;
+        if (float.IsNaN(kneeSpan) || float.IsInfinity(kneeSpan) || kneeSpan < 20f ||
+            float.IsNaN(rawSeatedThighDeg) || float.IsInfinity(rawSeatedThighDeg) ||
+            float.IsNaN(targetReadyKneeDeg) || float.IsInfinity(targetReadyKneeDeg) ||
+            float.IsNaN(targetSeatedThighDeg) || float.IsInfinity(targetSeatedThighDeg))
+            return;
+
+        kneeRawReadyDeg[leg] = rawReadyKneeDeg;
+        kneeRawStraightDeg[leg] = rawStraightKneeDeg;
+        thighRawSeatedDeg[leg] = rawSeatedThighDeg;
+        calibratedReadyKneeDeg[leg] = targetReadyKneeDeg;
+        calibratedSeatedThighDeg[leg] = targetSeatedThighDeg;
+        hasSeatedCalibration[leg] = true;
+    }
+
+    public void ClearSeatedLegCalibration(int leg)
+    {
+        if (leg < 0 || leg > 1) return;
+        hasSeatedCalibration[leg] = false;
+    }
+
+    public void SetSeatedTrainingVisual(
+        bool enabled,
+        int selectedLeg,
+        bool switching,
+        float sharedThighDeg,
+        float sharedKneeDeg)
+    {
+        seatedTrainingVisualEnabled = enabled;
+        selectedTrainingLeg = Mathf.Clamp(selectedLeg, 0, 1);
+        seatedTrainingVisualSwitching = switching;
+        sharedSeatedThighDeg = sharedThighDeg;
+        sharedReadyKneeDeg = sharedKneeDeg;
     }
 
     public void TryCalibrate(
@@ -137,6 +195,15 @@ public sealed class LowerBodyPoseDriver
         if (!geometryReady || sensorRotations == null || targets == null)
             return;
 
+        // A seated visual constraint must fade before standing, not wait for a
+        // fully upright pose that the constrained avatar cannot reach.
+        int activeIndex = selectedTrainingLeg == 0 ? LeftThighIndex : RightThighIndex;
+        float activeThigh = CorrectThighFlexion(selectedTrainingLeg,
+            GetSagittalFlexion(activeIndex, activeIndex - FirstIndex, sensorRotations));
+        seatedBlend = seatedTrainingVisualEnabled
+            ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(35f, 75f, activeThigh))
+            : 0f;
+
         DriveThigh(LeftThighIndex, 0, sensorRotations, targets);
         DriveThigh(RightThighIndex, 1, sensorRotations, targets);
 
@@ -171,22 +238,23 @@ public sealed class LowerBodyPoseDriver
             calfDirection.y * calfDirection.y + calfDirection.z * calfDirection.z < 0.01f)
             return false;
 
-        thighAngle = GetSagittalFlexion(thighIndex, thighIndex - FirstIndex, sensorRotations);
-        if (leg == 1)
-            thighAngle = CorrectRightThighFlexion(thighAngle);
+        float rawThighAngle = GetSagittalFlexion(
+            thighIndex, thighIndex - FirstIndex, sensorRotations);
 
         if (leg == 0)
         {
             // 左腿恢复上一个稳定版本：伸直时可正确回到接近 0°。
             float calfAngle = GetSagittalFlexion(calfIndex, calfIndex - FirstIndex, sensorRotations);
-            kneeAngle = Mathf.Abs(Mathf.DeltaAngle(thighAngle, calfAngle));
+            kneeAngle = Mathf.Abs(Mathf.DeltaAngle(rawThighAngle, calfAngle));
         }
         else
         {
             if (!TryGetRightKneeFlexion3D(sensorRotations, out kneeAngle))
                 return false;
-            kneeAngle = CorrectRightKneeFlexion(kneeAngle);
         }
+
+        thighAngle = CorrectThighFlexion(leg, rawThighAngle);
+        kneeAngle = CorrectKneeFlexion(leg, kneeAngle);
 
         return !float.IsNaN(thighAngle) && !float.IsInfinity(thighAngle) &&
             !float.IsNaN(kneeAngle) && !float.IsInfinity(kneeAngle);
@@ -235,8 +303,8 @@ public sealed class LowerBodyPoseDriver
         }
 
         float flexion = GetSagittalFlexion(deviceIndex, slot, sensorRotations);
-        if (leg == 1)
-            flexion = CorrectRightThighFlexion(flexion);
+        flexion = CorrectThighFlexion(leg, flexion);
+        flexion = Mathf.Lerp(flexion, sharedSeatedThighDeg, seatedBlend);
         flexion = Mathf.Clamp(
             flexion,
             -Mathf.Abs(config.lowerBodyThighMaxExtensionDeg),
@@ -290,7 +358,7 @@ public sealed class LowerBodyPoseDriver
                 }
                 else if (TryGetRightKneeFlexion3D(sensorRotations, out float rightKnee))
                 {
-                    kneeFlexion = CorrectRightKneeFlexion(rightKnee);
+                    kneeFlexion = rightKnee;
                 }
                 else
                 {
@@ -309,6 +377,12 @@ public sealed class LowerBodyPoseDriver
             kneeFlexion = calibrated[slot] ? kneeFlexionDeg[leg] : 0f;
         }
 
+        // Cached values have already been calibrated. Reapplying the mapping
+        // during a missing frame would accumulate angle drift.
+        if (calfIsFresh)
+            kneeFlexion = CorrectKneeFlexion(leg, kneeFlexion);
+        if (ShouldHoldSharedSeatedPose(leg))
+            kneeFlexion = Mathf.Lerp(kneeFlexion, sharedReadyKneeDeg, seatedBlend);
         kneeFlexion = Mathf.Clamp(
             kneeFlexion,
             0f,
@@ -317,39 +391,49 @@ public sealed class LowerBodyPoseDriver
             kneeFlexion = 0f;
         kneeFlexionDeg[leg] = kneeFlexion;
 
-        Vector3 hingeAxis = config.lowerBodyKneeHingeAxisLocal.sqrMagnitude > 0.000001f
-            ? config.lowerBodyKneeHingeAxisLocal.normalized
-            : Vector3.right;
-        Quaternion targetLocal = NormalizeSafe(
-            restLocal[slot] * Quaternion.AngleAxis(
-                kneeFlexion * config.lowerBodyKneeFlexionSign,
-                hingeAxis));
-
         int thighIndex = leg == 0 ? LeftThighIndex : RightThighIndex;
         Quaternion parentTargetWorld = thighIndex < targets.Length
             ? targets[thighIndex]
             : (parents[slot] != null ? parents[slot].rotation : Quaternion.identity);
+        // Solve the actual calf segment direction. The imported bind pose has
+        // a knee bend; adding an angle to it leaves a permanent left/right bias.
+        float calfRadians = (thighFlexionDeg[leg] - kneeFlexion) * Mathf.Deg2Rad;
+        Vector3 desiredWorld = avatarFacing * new Vector3(
+            0f, -Mathf.Cos(calfRadians), Mathf.Sin(calfRadians));
+        Vector3 desiredParent = Quaternion.Inverse(parentTargetWorld) * desiredWorld;
+        Quaternion targetLocal = NormalizeSafe(Quaternion.FromToRotation(
+            restDirectionParent[slot], desiredParent) * restLocal[slot]);
         targets[deviceIndex] = NormalizeSafe(parentTargetWorld * targetLocal);
     }
 
-    private float CorrectRightThighFlexion(float rawThighDeg)
+    private bool ShouldHoldSharedSeatedPose(int leg)
     {
-        if (!hasRightLegCalibration)
-            return rawThighDeg;
-
-        return rawThighDeg + (90f - rightThighRawSeatedDeg);
+        return seatedTrainingVisualEnabled &&
+            (seatedTrainingVisualSwitching || leg != selectedTrainingLeg);
     }
 
-    private float CorrectRightKneeFlexion(float rawKneeDeg)
+    private float CorrectThighFlexion(int leg, float rawThighDeg)
     {
-        if (!hasRightLegCalibration)
+        if (leg < 0 || leg > 1 || !hasSeatedCalibration[leg])
+            return rawThighDeg;
+
+        // Preserve the standing zero while mapping the seated reference.
+        return Mathf.Abs(thighRawSeatedDeg[leg]) > 1f
+            ? rawThighDeg * calibratedSeatedThighDeg[leg] / thighRawSeatedDeg[leg]
+            : rawThighDeg;
+    }
+
+    private float CorrectKneeFlexion(int leg, float rawKneeDeg)
+    {
+        if (leg < 0 || leg > 1 || !hasSeatedCalibration[leg])
             return rawKneeDeg;
 
-        float span = rightKneeRawReadyDeg - rightKneeRawStraightDeg;
-        if (span < 35f)
+        float span = kneeRawReadyDeg[leg] - kneeRawStraightDeg[leg];
+        if (span < 20f)
             return rawKneeDeg;
 
-        float corrected = (rawKneeDeg - rightKneeRawStraightDeg) * 90f / span;
+        float corrected = (rawKneeDeg - kneeRawStraightDeg[leg]) *
+            calibratedReadyKneeDeg[leg] / span;
         float deadZone = Mathf.Max(2f, config.lowerBodyKneeNeutralDeadZoneDeg);
         if (corrected <= deadZone)
             return 0f;
