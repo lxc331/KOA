@@ -163,11 +163,16 @@ public class MotionCaptureController : MonoBehaviour
         return sample;
     }
 
-    /// <summary>游戏阶段事件进入既有 JSONL 文件，不写入屏幕日志。</summary>
-    public void LogGameDiagnostic(string eventName, string detail)
+    /// <summary>训练阶段事件进入既有 JSONL 文件，不写入屏幕日志。</summary>
+    public void LogTrainingDiagnostic(string module, string eventName, string detail)
     {
-        logger?.LogEvent("knee_extension_" + eventName, detail);
+        string prefix = string.IsNullOrEmpty(module) ? "training" : module;
+        logger?.LogEvent(prefix + "_" + eventName, detail);
     }
+
+    /// <summary>兼容现有坐姿伸膝日志命名。</summary>
+    public void LogGameDiagnostic(string eventName, string detail) =>
+        LogTrainingDiagnostic("knee_extension", eventName, detail);
 
     /// <summary>把右腿坐姿/伸直校正同时应用于角度显示与人物骨骼驱动。</summary>
     public void ConfigureRightLegCalibration(

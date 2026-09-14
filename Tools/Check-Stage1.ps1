@@ -33,11 +33,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Runtime C# managed compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Editor C# managed compilation failed.' }
 & $runtime $compiler /nologo /noconfig /nostdlib+ /target:exe /langversion:9 "/out:$assembly" "-r:$runtimeAssembly" "-r:$editorAssembly" @referenceArgs (Join-Path $PSScriptRoot 'Stage1Check.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test runner compilation failed.' }
-Write-Output 'PASS: managed compilation of Assets/Scripts and Stage 1 editor tools.'
+Write-Output 'PASS: managed compilation of Assets/Scripts and Stage 1/3/4 editor tools.'
 $previousMonoPath = $env:MONO_PATH
 try {
     $env:MONO_PATH = "$(Join-Path $UnityData 'Managed');$engine;$(Join-Path $project 'Assets/Plugins');$(Join-Path $project 'Assets/Plugins/Sirenix/Assemblies');$(Join-Path $project 'Library/ScriptAssemblies')"
     & $mono $assembly
-    if ($LASTEXITCODE -ne 0) { throw 'Stage 1 logic regression failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Stage 1/3/4 logic regression failed.' }
 }
 finally { $env:MONO_PATH = $previousMonoPath }

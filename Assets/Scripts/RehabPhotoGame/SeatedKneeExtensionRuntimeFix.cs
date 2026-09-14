@@ -70,6 +70,7 @@ namespace RehabPhotoGame
         private float rawRightKneeDeg = float.NaN;
         private int sessionVersion;
         private bool sessionPaused;
+        private bool trainingModeActive = true;
         private bool showTechnicalOverlay = true;
 
         private bool hasMotionBaseline;
@@ -145,6 +146,46 @@ namespace RehabPhotoGame
             ? settings.sensorTimeoutSeconds
             : 2.2f;
 
+        public bool IsTrainingModeActive => trainingModeActive;
+
+        /// <summary>
+        /// 正式界面切换训练动作时启停 S1。退出 S1 会释放坐姿视觉映射、
+        /// 会话校正及根高度状态，避免与坐站状态机同时写人物。
+        /// </summary>
+        public void SetTrainingModeActive(bool active, string source)
+        {
+            if (trainingModeActive == active) return;
+            trainingModeActive = active;
+            sessionPaused = true;
+            sessionVersion++;
+            hasMotionBaseline = false;
+            leftEvaluator?.Reset(TrainingLeg.Left, true);
+            rightEvaluator?.Reset(TrainingLeg.Right, true);
+            lastDiagnosticKey = "";
+
+            if (!active)
+            {
+                seatedPoseEstablished = false;
+                seatedHeightLocked = false;
+                seatedHeightLockAt = float.PositiveInfinity;
+                standingCandidateSince = float.NaN;
+                motionCapture?.SetSeatedTrainingVisual(false, 0, false, 90f, 90f);
+                motionCapture?.ClearSeatedLegCalibration(0);
+                motionCapture?.ClearSeatedLegCalibration(1);
+                motionCapture?.SetGroundedFeet(true, true);
+                motionCapture?.UnlockSeatedVerticalOffset();
+                motionCapture?.SetRootMotionEnabledForTraining(true);
+            }
+            else if (leftEvaluator != null && rightEvaluator != null)
+            {
+                BeginLegSession(trainingLeg, false, source ?? "formal_ui_mode_enter");
+            }
+
+            motionCapture?.LogGameDiagnostic(
+                active ? "mode_enter" : "mode_exit",
+                $"session={sessionVersion}, source={source ?? "formal_ui"}");
+        }
+
         public void SetTechnicalOverlayVisible(bool visible)
         {
             showTechnicalOverlay = visible;
@@ -153,6 +194,7 @@ namespace RehabPhotoGame
         /// <summary>由正式训练界面暂停判定；已有完成次数不会被清除。</summary>
         public void SetSessionPaused(bool paused, string source)
         {
+            if (!trainingModeActive && !paused) return;
             if (sessionPaused == paused) return;
             sessionPaused = paused;
             if (paused)
@@ -244,6 +286,7 @@ namespace RehabPhotoGame
 
         private void Update()
         {
+            if (!trainingModeActive) return;
             if (motionCapture == null || leftEvaluator == null || rightEvaluator == null)
                 return;
 

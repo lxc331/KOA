@@ -6,7 +6,8 @@ using UnityEngine.UI;
 namespace RehabPhotoGame
 {
     /// <summary>
-    /// S1 正式训练界面。只消费坐姿伸膝快照，不读取或展示四元数、欧拉角及串口帧。
+    /// 正式摄影训练界面。消费坐姿伸膝、坐站或浅蹲快照，
+    /// 不读取或展示四元数、欧拉角及串口帧。
     /// </summary>
     [DefaultExecutionOrder(1200)]
     [DisallowMultipleComponent]
@@ -14,29 +15,50 @@ namespace RehabPhotoGame
     {
         private const string PhotoResource =
             "RehabPhotoGame/Photos/A_Distant/spring_01";
+        private static readonly string[] HighPhotoResources =
+        {
+            "RehabPhotoGame/Photos/B_High/pavilion_01",
+            "RehabPhotoGame/Photos/B_High/birds_01",
+            "RehabPhotoGame/Photos/B_High/lanterns_01"
+        };
+        private static readonly string[] LowPhotoResources =
+        {
+            "RehabPhotoGame/Photos/C_Low/grass_mushrooms_01",
+            "RehabPhotoGame/Photos/C_Low/butterflies_01",
+            "RehabPhotoGame/Photos/C_Low/lotus_01"
+        };
         private const string ShaderResource =
             "RehabPhotoGame/Shaders/FocusBlur";
         private const string BundledFontResource =
             "RehabPhotoGame/Fonts/NotoSansSC-Regular";
         private const string RequiredChineseGlyphs =
-            "中文公园摄影站坐姿伸膝等待设备连接开始训练暂停继续结束左右腿教练示范目标次数完成保持缓慢抬起放下照片清晰";
+            "中文公园摄影站坐姿伸膝等待设备连接开始训练暂停继续结束左右腿教练示范目标次数完成保持缓慢抬起放下照片清晰坐站高处低处浅蹲双脚着地同步起身屈曲回取景高度模式选择";
 
-        private static readonly Color DarkGreen = Hex("173E2B");
-        private static readonly Color Green = Hex("2F7A4C");
-        private static readonly Color BrightGreen = Hex("55A96F");
-        private static readonly Color PaleGreen = Hex("E8F3E9");
-        private static readonly Color WarmWhite = Hex("F8FBF7");
-        private static readonly Color Ink = Hex("173126");
-        private static readonly Color Muted = Hex("64776D");
+        // 第三段客户验收界面采用深色认知训练风格；动作算法不依赖这些颜色。
+        private static readonly Color DarkGreen = Hex("081A2A");
+        private static readonly Color Green = Hex("2A9A62");
+        private static readonly Color BrightGreen = Hex("8ED45A");
+        private static readonly Color PaleGreen = Hex("DCE9F0");
+        private static readonly Color WarmWhite = Hex("F1F6F8");
+        private static readonly Color Ink = Hex("EAF2F6");
+        private static readonly Color Muted = Hex("9DB0BD");
+        private static readonly Color PanelNavy = Hex("102B42");
+        private static readonly Color PanelNavyLight = Hex("173851");
+        private static readonly Color TrackNavy = Hex("24455C");
         private static readonly Color Warning = Hex("D49742");
 
         private readonly S1TrainingSession session = new S1TrainingSession();
         private readonly PhotoFocusSession focusSession = new PhotoFocusSession();
 
         private SeatedKneeExtensionRuntimeFix training;
+        private SitToStandRuntime sitToStandTraining;
+        private ShallowSquatRuntime shallowSquatTraining;
         private MotionCaptureController motionCapture;
         private MotionCaptureUI motionUI;
         private KneeExtensionTrainingSnapshot snapshot;
+        private SitToStandTrainingSnapshot sitToStandSnapshot;
+        private ShallowSquatTrainingSnapshot shallowSquatSnapshot;
+        private PhotoTrainingMode trainingMode = PhotoTrainingMode.SeatedKneeExtension;
 
         private Canvas canvas;
         private TMP_FontAsset runtimeFont;
@@ -45,6 +67,8 @@ namespace RehabPhotoGame
 
         private TMP_Text connectionText;
         private TMP_Text sensorText;
+        private TMP_Text titleText;
+        private TMP_Text photoTitleText;
         private TMP_Text selectedLegText;
         private TMP_Text coachInstructionText;
         private TMP_Text photoFocusText;
@@ -53,6 +77,7 @@ namespace RehabPhotoGame
         private TMP_Text stageText;
         private TMP_Text sessionCountText;
         private TMP_Text holdText;
+        private TMP_Text angleMetricText;
         private TMP_Text targetValueText;
         private TMP_Text modalTitleText;
         private TMP_Text modalBodyText;
@@ -67,6 +92,7 @@ namespace RehabPhotoGame
         private GameObject targetControls;
         private GameObject coachPanel;
         private GameObject photoPanel;
+        private GameObject photoViewport;
         private GameObject trainingPanel;
 
         private Button settingsButton;
@@ -78,8 +104,14 @@ namespace RehabPhotoGame
         private Button targetPlusButton;
         private Button modalPrimaryButton;
         private Button modalSecondaryButton;
+        private Button kneeModeButton;
+        private Button sitToStandModeButton;
+        private Button shallowSquatModeButton;
 
         private Texture2D sourcePhoto;
+        private Texture2D distantPhoto;
+        private Texture2D[] highPhotos;
+        private Texture2D[] lowPhotos;
         private RenderTexture focusedPhoto;
         private Material blurMaterial;
         private AudioSource audioSource;
@@ -87,12 +119,23 @@ namespace RehabPhotoGame
         private float flashEndsAt;
         private float resultEndsAt;
         private bool connectionPanelAutoHidden;
+        private int lastSitToStandCaptureSequence;
+        private int lastShallowSquatCaptureSequence;
+        private Vector2 photoBaseAnchoredPosition;
+        private const float PhotoContentOverscan = 0.14f;
+        private const float PhotoScrollRange = 0.22f;
 
         private void Start()
         {
             training = GetComponent<SeatedKneeExtensionRuntimeFix>();
             if (training == null)
                 training = FindObjectOfType<SeatedKneeExtensionRuntimeFix>();
+            sitToStandTraining = GetComponent<SitToStandRuntime>();
+            if (sitToStandTraining == null)
+                sitToStandTraining = FindObjectOfType<SitToStandRuntime>();
+            shallowSquatTraining = GetComponent<ShallowSquatRuntime>();
+            if (shallowSquatTraining == null)
+                shallowSquatTraining = FindObjectOfType<ShallowSquatRuntime>();
             motionCapture = FindObjectOfType<MotionCaptureController>();
             motionUI = motionCapture != null
                 ? motionCapture.GetComponent<MotionCaptureUI>()
@@ -102,7 +145,10 @@ namespace RehabPhotoGame
             if (legacy != null) legacy.enabled = false;
 
             training?.SetTechnicalOverlayVisible(false);
+            training?.SetTrainingModeActive(true, "formal_ui_ready");
             training?.SetSessionPaused(true, "formal_ui_ready");
+            sitToStandTraining?.SetModeActive(false, "formal_ui_ready");
+            shallowSquatTraining?.SetModeActive(false, "formal_ui_ready");
             if (motionUI != null)
             {
                 motionUI.SetFormalTrainingMode(true);
@@ -120,16 +166,33 @@ namespace RehabPhotoGame
             motionCapture?.LogGameDiagnostic(
                 "s1_formal_ui_ready",
                 "canvas=ready, raw_telemetry_visible=false, target=3");
+            motionCapture?.LogTrainingDiagnostic(
+                "sit_to_stand", "stage3_ui_ready",
+                $"highPhotos={AvailableHighPhotoCount()}, defaultMode={trainingMode}");
+            motionCapture?.LogTrainingDiagnostic(
+                "shallow_squat", "stage4_ui_ready",
+                $"lowPhotos={AvailableLowPhotoCount()}, defaultMode={trainingMode}");
         }
 
         private void LateUpdate()
         {
             if (training != null)
                 snapshot = training.CurrentSnapshot;
+            if (sitToStandTraining != null)
+                sitToStandSnapshot = sitToStandTraining.CurrentSnapshot;
+            if (shallowSquatTraining != null)
+                shallowSquatSnapshot = shallowSquatTraining.CurrentSnapshot;
 
-            bool capture = focusSession.Update(snapshot);
-            if (capture && session.State == S1TrainingRunState.Running)
-                HandleCapture();
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                bool capture = focusSession.Update(snapshot);
+                if (capture && session.State == S1TrainingRunState.Running)
+                    HandleCapture();
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+                DetectSitToStandCapture();
+            else
+                DetectShallowSquatCapture();
 
             UpdatePhotoTexture();
             UpdateFlash();
@@ -169,32 +232,32 @@ namespace RehabPhotoGame
         private void BuildTopBar(Transform parent)
         {
             Transform bar = CreateImage(parent, "Top Bar",
-                new Vector2(0f, 0.915f), Vector2.one, DarkGreen).transform;
+                new Vector2(0f, 0.935f), Vector2.one, DarkGreen).transform;
 
-            CreateText(bar, "Title", "公园摄影站  ·  S1 坐姿伸膝",
-                new Vector2(0.018f, 0.12f), new Vector2(0.37f, 0.88f),
-                30, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+            titleText = CreateText(bar, "Title", "公园摄影站  ·  认知阶段 · 单动作学习",
+                new Vector2(0.018f, 0.10f), new Vector2(0.42f, 0.90f),
+                26, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
 
             connectionText = CreateText(bar, "Connection Status", "等待设备",
-                new Vector2(0.37f, 0.52f), new Vector2(0.69f, 0.90f),
-                18, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
+                new Vector2(0.42f, 0.53f), new Vector2(0.68f, 0.92f),
+                16, FontStyles.Bold, BrightGreen, TextAlignmentOptions.MidlineLeft);
             sensorText = CreateText(bar, "Sensor Status", "06  07  08  09",
-                new Vector2(0.37f, 0.08f), new Vector2(0.69f, 0.48f),
-                16, FontStyles.Normal, Color.white, TextAlignmentOptions.MidlineLeft);
+                new Vector2(0.42f, 0.08f), new Vector2(0.68f, 0.50f),
+                14, FontStyles.Normal, Muted, TextAlignmentOptions.MidlineLeft);
 
             settingsButton = CreateButton(bar, "Device Settings", "设备设置",
-                new Vector2(0.70f, 0.19f), new Vector2(0.79f, 0.81f),
-                BrightGreen, Color.white);
+                new Vector2(0.70f, 0.16f), new Vector2(0.79f, 0.84f),
+                PanelNavyLight, Color.white);
             settingsButton.onClick.AddListener(ToggleConnectionPanel);
 
             pauseButton = CreateButton(bar, "Pause", "暂停",
-                new Vector2(0.80f, 0.19f), new Vector2(0.89f, 0.81f),
-                WarmWhite, DarkGreen);
+                new Vector2(0.80f, 0.16f), new Vector2(0.89f, 0.84f),
+                PanelNavyLight, Color.white);
             pauseButton.onClick.AddListener(TogglePause);
 
             endButton = CreateButton(bar, "End", "结束训练",
-                new Vector2(0.90f, 0.19f), new Vector2(0.985f, 0.81f),
-                new Color(0.78f, 0.35f, 0.31f, 1f), Color.white);
+                new Vector2(0.90f, 0.16f), new Vector2(0.985f, 0.84f),
+                new Color(0.70f, 0.23f, 0.24f, 1f), Color.white);
             endButton.onClick.AddListener(EndTraining);
         }
 
@@ -202,31 +265,31 @@ namespace RehabPhotoGame
         {
             coachPanel = CreateImage(parent, "Coach Panel",
                 new Vector2(0.015f, 0.255f), new Vector2(0.235f, 0.90f),
-                new Color(WarmWhite.r, WarmWhite.g, WarmWhite.b, 0.96f));
+                new Color(PanelNavy.r, PanelNavy.g, PanelNavy.b, 0.97f));
             Transform panel = coachPanel.transform;
 
             CreateText(panel, "Coach Title", "教练示范",
                 new Vector2(0.07f, 0.90f), new Vector2(0.93f, 0.985f),
-                26, FontStyles.Bold, DarkGreen, TextAlignmentOptions.MidlineLeft);
+                22, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
 
             Transform placeholder = CreateImage(panel, "Coach Placeholder",
                 new Vector2(0.07f, 0.48f), new Vector2(0.93f, 0.88f),
-                PaleGreen).transform;
+                PanelNavyLight).transform;
             CreateText(placeholder, "Coach Icon", "教练\n示范",
                 new Vector2(0.22f, 0.22f), new Vector2(0.78f, 0.78f),
                 42, FontStyles.Bold, Green, TextAlignmentOptions.Center);
             CreateText(placeholder, "Placeholder Note", "动作视频占位",
                 new Vector2(0.08f, 0.04f), new Vector2(0.92f, 0.20f),
-                17, FontStyles.Italic, Muted, TextAlignmentOptions.Center);
+                15, FontStyles.Italic, Muted, TextAlignmentOptions.Center);
 
             coachInstructionText = CreateText(panel, "Coach Instructions",
                 "1. 坐稳并让小腿自然下垂\n2. 缓慢抬起小腿\n3. 画面清晰后保持\n4. 快门后缓慢放下",
                 new Vector2(0.07f, 0.18f), new Vector2(0.93f, 0.46f),
-                19, FontStyles.Normal, Ink, TextAlignmentOptions.TopLeft);
+                16, FontStyles.Normal, Ink, TextAlignmentOptions.TopLeft);
 
             selectedLegText = CreateText(panel, "Selected Leg", "当前训练：左腿",
                 new Vector2(0.07f, 0.115f), new Vector2(0.93f, 0.18f),
-                19, FontStyles.Bold, DarkGreen, TextAlignmentOptions.MidlineLeft);
+                16, FontStyles.Bold, BrightGreen, TextAlignmentOptions.MidlineLeft);
 
             leftLegButton = CreateButton(panel, "Left Leg", "左腿  06+07",
                 new Vector2(0.07f, 0.035f), new Vector2(0.48f, 0.105f),
@@ -242,35 +305,42 @@ namespace RehabPhotoGame
         {
             photoPanel = CreateImage(parent, "Photo Panel",
                 new Vector2(0.65f, 0.255f), new Vector2(0.985f, 0.90f),
-                new Color(WarmWhite.r, WarmWhite.g, WarmWhite.b, 0.97f));
+                new Color(PanelNavy.r, PanelNavy.g, PanelNavy.b, 0.97f));
             Transform panel = photoPanel.transform;
 
-            CreateText(panel, "Photo Title", "远景对焦",
+            photoTitleText = CreateText(panel, "Photo Title", "实时取景",
                 new Vector2(0.04f, 0.91f), new Vector2(0.57f, 0.985f),
-                26, FontStyles.Bold, DarkGreen, TextAlignmentOptions.MidlineLeft);
+                22, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
             photoFocusText = CreateText(panel, "Focus Value", "清晰度 0%",
                 new Vector2(0.58f, 0.91f), new Vector2(0.96f, 0.985f),
-                22, FontStyles.Bold, Green, TextAlignmentOptions.MidlineRight);
+                18, FontStyles.Bold, BrightGreen, TextAlignmentOptions.MidlineRight);
 
-            photoImage = CreateRawImage(panel, "Distant Photo",
+            // 固定画框，图片作为被裁切内容在画框内滚动；不再移动整个取景面板。
+            photoViewport = CreateImage(panel, "Photo Viewport",
                 new Vector2(0.04f, 0.35f), new Vector2(0.96f, 0.827f),
+                TrackNavy);
+            photoViewport.AddComponent<RectMask2D>();
+            photoImage = CreateRawImage(photoViewport.transform, "Photo Content",
+                new Vector2(-PhotoContentOverscan, -PhotoContentOverscan),
+                new Vector2(1f + PhotoContentOverscan, 1f + PhotoContentOverscan),
                 Color.white);
+            photoBaseAnchoredPosition = photoImage.rectTransform.anchoredPosition;
 
             photoPromptText = CreateText(panel, "Photo Prompt",
                 "开始训练后，抬腿会让照片逐渐清晰",
                 new Vector2(0.04f, 0.24f), new Vector2(0.96f, 0.33f),
-                19, FontStyles.Bold, Ink, TextAlignmentOptions.Center);
+                16, FontStyles.Bold, Color.white, TextAlignmentOptions.Center);
 
             CreateImage(panel, "Focus Track",
                 new Vector2(0.04f, 0.18f), new Vector2(0.96f, 0.215f),
-                new Color(0.76f, 0.84f, 0.78f, 1f));
+                TrackNavy);
             focusBarFill = CreateImage(panel, "Focus Fill",
                 new Vector2(0.04f, 0.18f), new Vector2(0.04f, 0.215f),
                 BrightGreen).GetComponent<Image>();
 
             resultCard = CreateImage(panel, "Single Result Card",
                 new Vector2(0.14f, 0.40f), new Vector2(0.86f, 0.74f),
-                new Color(DarkGreen.r, DarkGreen.g, DarkGreen.b, 0.93f));
+                new Color(PanelNavyLight.r, PanelNavyLight.g, PanelNavyLight.b, 0.96f));
             resultText = CreateText(resultCard.transform, "Result Text",
                 "拍摄成功",
                 new Vector2(0.06f, 0.08f), new Vector2(0.94f, 0.92f),
@@ -282,29 +352,31 @@ namespace RehabPhotoGame
         {
             trainingPanel = CreateImage(parent, "Training Panel",
                 new Vector2(0.015f, 0.02f), new Vector2(0.985f, 0.23f),
-                new Color(WarmWhite.r, WarmWhite.g, WarmWhite.b, 0.97f));
+                new Color(PanelNavy.r, PanelNavy.g, PanelNavy.b, 0.98f));
             Transform panel = trainingPanel.transform;
 
             mainInstructionText = CreateText(panel, "Main Instruction",
                 "请先完成设备连接和站姿标定",
                 new Vector2(0.025f, 0.57f), new Vector2(0.58f, 0.94f),
-                27, FontStyles.Bold, DarkGreen, TextAlignmentOptions.MidlineLeft);
+                22, FontStyles.Bold, Color.white, TextAlignmentOptions.MidlineLeft);
 
             CreateImage(panel, "Hold Track",
                 new Vector2(0.025f, 0.37f), new Vector2(0.58f, 0.48f),
-                new Color(0.76f, 0.84f, 0.78f, 1f));
+                TrackNavy);
             holdBarFill = CreateImage(panel, "Hold Fill",
                 new Vector2(0.025f, 0.37f), new Vector2(0.025f, 0.48f),
                 BrightGreen).GetComponent<Image>();
 
             stageText = CreateText(panel, "Stage", "● 等待开始",
                 new Vector2(0.025f, 0.08f), new Vector2(0.58f, 0.32f),
-                20, FontStyles.Bold, Green, TextAlignmentOptions.MidlineLeft);
+                17, FontStyles.Bold, BrightGreen, TextAlignmentOptions.MidlineLeft);
 
-            sessionCountText = CreateMetric(panel, "Session Count", "本组进度", "0 / 3",
-                new Vector2(0.62f, 0.10f), new Vector2(0.79f, 0.90f));
-            holdText = CreateMetric(panel, "Hold Time", "保持时间", "0.0 / 3 秒",
-                new Vector2(0.81f, 0.10f), new Vector2(0.975f, 0.90f));
+            angleMetricText = CreateMetric(panel, "Angle Metric", "当前角度", "--",
+                new Vector2(0.60f, 0.10f), new Vector2(0.725f, 0.90f));
+            sessionCountText = CreateMetric(panel, "Session Count", "重复次数", "0 / 3",
+                new Vector2(0.735f, 0.10f), new Vector2(0.855f, 0.90f));
+            holdText = CreateMetric(panel, "Hold Time", "保持计时", "0.0 / 3 秒",
+                new Vector2(0.865f, 0.10f), new Vector2(0.975f, 0.90f));
         }
 
         private void BuildModal(Transform parent)
@@ -327,18 +399,38 @@ namespace RehabPhotoGame
             targetControls.layer = 5;
             targetControls.transform.SetParent(card, false);
             SetRect((RectTransform)targetControls.transform,
-                new Vector2(0.12f, 0.28f), new Vector2(0.88f, 0.47f));
+                new Vector2(0.12f, 0.23f), new Vector2(0.88f, 0.49f));
+
+            kneeModeButton = CreateButton(
+                targetControls.transform, "Knee Extension Mode", "坐姿伸膝",
+                new Vector2(0f, 0.54f), new Vector2(0.32f, 1f),
+                Green, Color.white);
+            sitToStandModeButton = CreateButton(
+                targetControls.transform, "Sit To Stand Mode", "坐站摄影",
+                new Vector2(0.34f, 0.54f), new Vector2(0.66f, 1f),
+                PaleGreen, DarkGreen);
+            shallowSquatModeButton = CreateButton(
+                targetControls.transform, "Shallow Squat Mode", "浅蹲摄影",
+                new Vector2(0.68f, 0.54f), new Vector2(1f, 1f),
+                PaleGreen, DarkGreen);
+            kneeModeButton.onClick.AddListener(() =>
+                SelectTrainingMode(PhotoTrainingMode.SeatedKneeExtension));
+            sitToStandModeButton.onClick.AddListener(() =>
+                SelectTrainingMode(PhotoTrainingMode.SitToStand));
+            shallowSquatModeButton.onClick.AddListener(() =>
+                SelectTrainingMode(PhotoTrainingMode.ShallowSquat));
+
             CreateText(targetControls.transform, "Target Label", "目标次数",
-                new Vector2(0f, 0f), new Vector2(0.34f, 1f),
+                new Vector2(0f, 0f), new Vector2(0.34f, 0.46f),
                 20, FontStyles.Bold, Ink, TextAlignmentOptions.Center);
             targetMinusButton = CreateButton(targetControls.transform, "Target Minus", "－",
-                new Vector2(0.36f, 0.10f), new Vector2(0.51f, 0.90f),
+                new Vector2(0.36f, 0.04f), new Vector2(0.51f, 0.43f),
                 PaleGreen, DarkGreen);
             targetValueText = CreateText(targetControls.transform, "Target Value", "3 次",
-                new Vector2(0.52f, 0f), new Vector2(0.71f, 1f),
+                new Vector2(0.52f, 0f), new Vector2(0.71f, 0.46f),
                 24, FontStyles.Bold, Green, TextAlignmentOptions.Center);
             targetPlusButton = CreateButton(targetControls.transform, "Target Plus", "＋",
-                new Vector2(0.72f, 0.10f), new Vector2(0.87f, 0.90f),
+                new Vector2(0.72f, 0.04f), new Vector2(0.87f, 0.43f),
                 PaleGreen, DarkGreen);
             targetMinusButton.onClick.AddListener(() => ChangeTarget(-1));
             targetPlusButton.onClick.AddListener(() => ChangeTarget(1));
@@ -368,41 +460,129 @@ namespace RehabPhotoGame
             focusSession.Reset();
             resultCard.SetActive(false);
             resultEndsAt = 0f;
-            training?.SetSessionPaused(false, "s1_session_start");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                training?.SetSessionPaused(false, "s1_session_start");
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                sitToStandTraining?.SetSessionPaused(false, "stage3_session_start");
+                lastSitToStandCaptureSequence =
+                    sitToStandTraining != null
+                        ? sitToStandTraining.CurrentSnapshot.CaptureSequence
+                        : 0;
+            }
+            else
+            {
+                shallowSquatTraining?.SetSessionPaused(false, "stage4_session_start");
+                lastShallowSquatCaptureSequence =
+                    shallowSquatTraining != null
+                        ? shallowSquatTraining.CurrentSnapshot.CaptureSequence
+                        : 0;
+            }
             motionUI?.SetFormalConnectionPanelVisible(false);
             connectionPanelAutoHidden = true;
-            motionCapture?.LogGameDiagnostic(
-                "s1_session_start",
-                $"target={session.TargetRepetitions}, leg={LegName(snapshot.Leg)}");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                motionCapture?.LogGameDiagnostic(
+                    "s1_session_start",
+                    $"target={session.TargetRepetitions}, leg={LegName(snapshot.Leg)}");
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                motionCapture?.LogTrainingDiagnostic(
+                    "sit_to_stand", "session_start",
+                    $"target={session.TargetRepetitions}, sensors=06+07+08+09");
+            }
+            else
+            {
+                motionCapture?.LogTrainingDiagnostic(
+                    "shallow_squat", "session_start",
+                    $"target={session.TargetRepetitions}, sensors=06+07+08+09");
+            }
         }
 
         private void PauseTraining()
         {
             if (!session.Pause()) return;
-            training?.SetSessionPaused(true, "s1_pause_button");
-            motionCapture?.LogGameDiagnostic(
-                "s1_session_pause",
-                $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                training?.SetSessionPaused(true, "s1_pause_button");
+                motionCapture?.LogGameDiagnostic(
+                    "s1_session_pause",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                sitToStandTraining?.SetSessionPaused(true, "stage3_pause_button");
+                motionCapture?.LogTrainingDiagnostic(
+                    "sit_to_stand", "session_pause",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
+            else
+            {
+                shallowSquatTraining?.SetSessionPaused(true, "stage4_pause_button");
+                motionCapture?.LogTrainingDiagnostic(
+                    "shallow_squat", "session_pause",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
         }
 
         private void ResumeTraining()
         {
             if (!session.Resume()) return;
             focusSession.Reset();
-            training?.SetSessionPaused(false, "s1_resume_button");
-            motionCapture?.LogGameDiagnostic(
-                "s1_session_resume",
-                $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                training?.SetSessionPaused(false, "s1_resume_button");
+                motionCapture?.LogGameDiagnostic(
+                    "s1_session_resume",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                sitToStandTraining?.SetSessionPaused(false, "stage3_resume_button");
+                lastSitToStandCaptureSequence = sitToStandTraining != null
+                    ? sitToStandTraining.CurrentSnapshot.CaptureSequence
+                    : 0;
+                motionCapture?.LogTrainingDiagnostic(
+                    "sit_to_stand", "session_resume",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
+            else
+            {
+                shallowSquatTraining?.SetSessionPaused(false, "stage4_resume_button");
+                lastShallowSquatCaptureSequence = shallowSquatTraining != null
+                    ? shallowSquatTraining.CurrentSnapshot.CaptureSequence
+                    : 0;
+                motionCapture?.LogTrainingDiagnostic(
+                    "shallow_squat", "session_resume",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
         }
 
         private void EndTraining()
         {
             if (!session.End()) return;
-            training?.SetSessionPaused(true, "s1_end_button");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+                training?.SetSessionPaused(true, "s1_end_button");
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+                sitToStandTraining?.SetSessionPaused(true, "stage3_end_button");
+            else
+                shallowSquatTraining?.SetSessionPaused(true, "stage4_end_button");
             resultCard.SetActive(false);
-            motionCapture?.LogGameDiagnostic(
-                "s1_session_end",
-                $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+                motionCapture?.LogGameDiagnostic(
+                    "s1_session_end",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+                motionCapture?.LogTrainingDiagnostic(
+                    "sit_to_stand", "session_end",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            else
+                motionCapture?.LogTrainingDiagnostic(
+                    "shallow_squat", "session_end",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
         }
 
         private void HandleCapture()
@@ -411,28 +591,86 @@ namespace RehabPhotoGame
             flashEndsAt = Time.unscaledTime + 0.20f;
             resultEndsAt = Time.unscaledTime + 2.5f;
             resultCard.SetActive(true);
-            resultText.text = $"拍摄成功\n第 {session.CompletedRepetitions} 张照片";
+            resultText.text = trainingMode == PhotoTrainingMode.SitToStand
+                ? $"高处拍摄成功\n第 {session.CompletedRepetitions} 张照片"
+                : trainingMode == PhotoTrainingMode.ShallowSquat
+                    ? $"低处拍摄成功\n第 {session.CompletedRepetitions} 张照片"
+                    : $"拍摄成功\n第 {session.CompletedRepetitions} 张照片";
             if (audioSource != null && shutterClip != null)
                 audioSource.PlayOneShot(shutterClip);
 
-            motionCapture?.LogGameDiagnostic(
-                "photo_capture",
-                JsonUtility.ToJson(new FormalCaptureDiagnostic
-                {
-                    leg = snapshot.Leg.ToString(),
-                    sessionCompleted = session.CompletedRepetitions,
-                    sessionTarget = session.TargetRepetitions,
-                    kneeAngleDeg = snapshot.KneeAngleDeg,
-                    targetKneeDeg = snapshot.TargetKneeDeg,
-                    holdSeconds = snapshot.HoldSeconds,
-                    focus01 = focusSession.Focus01
-                }));
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                motionCapture?.LogGameDiagnostic(
+                    "photo_capture",
+                    JsonUtility.ToJson(new FormalCaptureDiagnostic
+                    {
+                        leg = snapshot.Leg.ToString(),
+                        sessionCompleted = session.CompletedRepetitions,
+                        sessionTarget = session.TargetRepetitions,
+                        kneeAngleDeg = snapshot.KneeAngleDeg,
+                        targetKneeDeg = snapshot.TargetKneeDeg,
+                        holdSeconds = snapshot.HoldSeconds,
+                        focus01 = focusSession.Focus01
+                    }));
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                motionCapture?.LogTrainingDiagnostic(
+                    "sit_to_stand", "photo_capture",
+                    JsonUtility.ToJson(new SitToStandCaptureDiagnostic
+                    {
+                        sessionCompleted = session.CompletedRepetitions,
+                        sessionTarget = session.TargetRepetitions,
+                        progress = sitToStandSnapshot.RaiseProgress01,
+                        holdSeconds = sitToStandSnapshot.HoldSeconds,
+                        leftThighDeg = sitToStandSnapshot.LeftThighDeg,
+                        leftKneeDeg = sitToStandSnapshot.LeftKneeDeg,
+                        rightThighDeg = sitToStandSnapshot.RightThighDeg,
+                        rightKneeDeg = sitToStandSnapshot.RightKneeDeg
+                    }));
+                SelectActivePhoto();
+            }
+            else
+            {
+                motionCapture?.LogTrainingDiagnostic(
+                    "shallow_squat", "photo_capture",
+                    JsonUtility.ToJson(new ShallowSquatCaptureDiagnostic
+                    {
+                        sessionCompleted = session.CompletedRepetitions,
+                        sessionTarget = session.TargetRepetitions,
+                        progress = shallowSquatSnapshot.DropProgress01,
+                        holdSeconds = shallowSquatSnapshot.HoldSeconds,
+                        leftThighDeg = shallowSquatSnapshot.LeftThighDeg,
+                        leftKneeDeg = shallowSquatSnapshot.LeftKneeDeg,
+                        rightThighDeg = shallowSquatSnapshot.RightThighDeg,
+                        rightKneeDeg = shallowSquatSnapshot.RightKneeDeg
+                    }));
+                SelectActivePhoto();
+            }
 
             if (!completed) return;
-            training?.SetSessionPaused(true, "s1_target_complete");
-            motionCapture?.LogGameDiagnostic(
-                "s1_session_complete",
-                $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                training?.SetSessionPaused(true, "s1_target_complete");
+                motionCapture?.LogGameDiagnostic(
+                    "s1_session_complete",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
+            else if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                sitToStandTraining?.SetSessionPaused(true, "stage3_target_complete");
+                motionCapture?.LogTrainingDiagnostic(
+                    "sit_to_stand", "session_complete",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
+            else
+            {
+                shallowSquatTraining?.SetSessionPaused(true, "stage4_target_complete");
+                motionCapture?.LogTrainingDiagnostic(
+                    "shallow_squat", "session_complete",
+                    $"completed={session.CompletedRepetitions}, target={session.TargetRepetitions}");
+            }
         }
 
         private void TogglePause()
@@ -478,9 +716,65 @@ namespace RehabPhotoGame
 
         private void SelectLeg(TrainingLeg leg)
         {
+            if (trainingMode != PhotoTrainingMode.SeatedKneeExtension) return;
             training?.SelectTrainingLeg(leg, "s1_canvas_button");
             focusSession.Reset();
             resultCard.SetActive(false);
+        }
+
+        private void SelectTrainingMode(PhotoTrainingMode mode)
+        {
+            if (session.State != S1TrainingRunState.Idle || trainingMode == mode)
+                return;
+
+            trainingMode = mode;
+            focusSession.Reset();
+            resultCard.SetActive(false);
+            resultEndsAt = 0f;
+
+            bool kneeExtension = mode == PhotoTrainingMode.SeatedKneeExtension;
+            bool sitToStand = mode == PhotoTrainingMode.SitToStand;
+            bool shallowSquat = mode == PhotoTrainingMode.ShallowSquat;
+            training?.SetTrainingModeActive(kneeExtension, "formal_ui_mode_switch");
+            sitToStandTraining?.SetModeActive(sitToStand, "formal_ui_mode_switch");
+            shallowSquatTraining?.SetModeActive(shallowSquat, "formal_ui_mode_switch");
+            if (kneeExtension)
+            {
+                training?.SetSessionPaused(true, "formal_ui_mode_switch");
+            }
+            else if (sitToStand)
+            {
+                lastSitToStandCaptureSequence = sitToStandTraining != null
+                    ? sitToStandTraining.CurrentSnapshot.CaptureSequence
+                    : 0;
+            }
+            else
+            {
+                lastShallowSquatCaptureSequence = shallowSquatTraining != null
+                    ? shallowSquatTraining.CurrentSnapshot.CaptureSequence
+                    : 0;
+            }
+
+            SelectActivePhoto();
+            RefreshAllVisuals();
+        }
+
+        private void DetectSitToStandCapture()
+        {
+            if (sitToStandSnapshot.CaptureSequence <= lastSitToStandCaptureSequence)
+                return;
+            lastSitToStandCaptureSequence = sitToStandSnapshot.CaptureSequence;
+            if (session.State == S1TrainingRunState.Running)
+                HandleCapture();
+        }
+
+        private void DetectShallowSquatCapture()
+        {
+            if (shallowSquatSnapshot.CaptureSequence <= lastShallowSquatCaptureSequence)
+                return;
+            lastShallowSquatCaptureSequence = shallowSquatSnapshot.CaptureSequence;
+            if (session.State == S1TrainingRunState.Running)
+                HandleCapture();
         }
 
         private void ToggleConnectionPanel()
@@ -513,10 +807,17 @@ namespace RehabPhotoGame
             }
             RefreshModal();
             RefreshLegButtons();
+            RefreshModeButtons();
         }
 
         private void RefreshTopBar()
         {
+            if (titleText != null)
+                titleText.text = trainingMode == PhotoTrainingMode.SitToStand
+                    ? "公园摄影站  ·  认知阶段 · 坐站摄影"
+                    : trainingMode == PhotoTrainingMode.ShallowSquat
+                        ? "公园摄影站  ·  认知阶段 · 浅蹲摄影"
+                        : "公园摄影站  ·  认知阶段 · 坐姿伸膝";
             MotionCaptureState state = motionCapture != null ? motionCapture.State : null;
             if (state == null)
             {
@@ -547,33 +848,94 @@ namespace RehabPhotoGame
 
         private void RefreshTrainingPanel()
         {
-            float holdRatio = snapshot.HoldDurationSeconds > 0f
-                ? Mathf.Clamp01(snapshot.HoldSeconds / snapshot.HoldDurationSeconds)
+            float holdSeconds = trainingMode == PhotoTrainingMode.SitToStand
+                ? sitToStandSnapshot.HoldSeconds
+                : trainingMode == PhotoTrainingMode.ShallowSquat
+                    ? shallowSquatSnapshot.HoldSeconds
+                    : snapshot.HoldSeconds;
+            float holdDuration = trainingMode == PhotoTrainingMode.SitToStand
+                ? sitToStandSnapshot.HoldDurationSeconds
+                : trainingMode == PhotoTrainingMode.ShallowSquat
+                    ? shallowSquatSnapshot.HoldDurationSeconds
+                    : snapshot.HoldDurationSeconds;
+            float holdRatio = holdDuration > 0f
+                ? Mathf.Clamp01(holdSeconds / holdDuration)
                 : 0f;
             SetFill(holdBarFill, holdRatio, 0.025f, 0.58f);
 
             sessionCountText.text =
-                $"<size=18><color=#64776D>本组进度</color></size>\n" +
+                $"<size=16><color=#9DB0BD>重复次数</color></size>\n" +
                 $"<size=34><b>{session.CompletedRepetitions} / {session.TargetRepetitions}</b></size>";
             holdText.text =
-                $"<size=18><color=#64776D>保持时间</color></size>\n" +
-                $"<size=30><b>{snapshot.HoldSeconds:F1} / " +
-                $"{Mathf.Max(3f, snapshot.HoldDurationSeconds):F0} 秒</b></size>";
+                $"<size=16><color=#9DB0BD>保持计时</color></size>\n" +
+                $"<size=30><b>{holdSeconds:F1} / " +
+                $"{Mathf.Max(0f, holdDuration):F0} 秒</b></size>";
+            if (angleMetricText != null)
+                angleMetricText.text =
+                    $"<size=16><color=#9DB0BD>当前角度</color></size>\n" +
+                    $"<size=26><b>{CurrentAngleMetric()}</b></size>";
 
             mainInstructionText.text = FriendlyInstruction();
             stageText.text = StageCaption();
-            selectedLegText.text = "当前训练：" + LegName(snapshot.Leg) + "腿";
-            coachInstructionText.text = snapshot.Leg == TrainingLeg.Right
-                ? "1. 坐稳，右小腿自然下垂\n2. 缓慢抬起右小腿\n3. 画面清晰后保持\n4. 快门后缓慢放下"
-                : "1. 坐稳，左小腿自然下垂\n2. 缓慢抬起左小腿\n3. 画面清晰后保持\n4. 快门后缓慢放下";
+            if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                selectedLegText.text = "当前训练：双腿坐站";
+                coachInstructionText.text =
+                    "① 坐稳，双脚平放地面\n② 左右腿同步缓慢站起\n" +
+                    "③ 站稳后保持等待快门\n④ 拍摄后缓慢坐回";
+            }
+            else if (trainingMode == PhotoTrainingMode.ShallowSquat)
+            {
+                selectedLegText.text = "当前训练：双腿浅蹲";
+                coachInstructionText.text =
+                    "① 站稳，双脚平行着地\n② 左右腿同步缓慢屈曲\n" +
+                    "③ 浅蹲到目标后保持\n④ 拍摄后缓慢站直";
+            }
+            else
+            {
+                selectedLegText.text = "当前训练：" + LegName(snapshot.Leg) + "腿";
+                coachInstructionText.text = snapshot.Leg == TrainingLeg.Right
+                    ? "① 坐稳，右小腿自然下垂\n② 缓慢抬起右小腿\n③ 画面清晰后保持\n④ 快门后缓慢放下"
+                    : "① 坐稳，左小腿自然下垂\n② 缓慢抬起左小腿\n③ 画面清晰后保持\n④ 快门后缓慢放下";
+            }
         }
 
         private void RefreshPhotoPanel()
         {
-            float focus = focusSession.Focus01;
-            photoFocusText.text = $"清晰度 {focus * 100f:F0}%";
-            SetFill(focusBarFill, focus, 0.04f, 0.96f);
+            float progress = trainingMode == PhotoTrainingMode.SitToStand
+                ? sitToStandSnapshot.RaiseProgress01
+                : trainingMode == PhotoTrainingMode.ShallowSquat
+                    ? shallowSquatSnapshot.DropProgress01
+                    : focusSession.Focus01;
+            if (photoTitleText != null)
+                photoTitleText.text = trainingMode == PhotoTrainingMode.SitToStand
+                    ? "● 实时取景 · 高处目标"
+                    : trainingMode == PhotoTrainingMode.ShallowSquat
+                        ? "● 实时取景 · 低处目标"
+                        : "● 实时取景 · 远景对焦";
+            photoFocusText.text = trainingMode == PhotoTrainingMode.SitToStand
+                ? $"取景高度 {progress * 100f:F0}%"
+                : trainingMode == PhotoTrainingMode.ShallowSquat
+                    ? $"降低进度 {progress * 100f:F0}%"
+                    : $"清晰度 {progress * 100f:F0}%";
+            SetFill(focusBarFill, progress, 0.04f, 0.96f);
             photoPromptText.text = PhotoPrompt();
+
+            if (photoImage != null)
+            {
+                // 画框的 RectTransform 始终不动，只移动其中被 RectMask2D 裁切的图片内容。
+                float viewportHeight = photoViewport != null
+                    ? photoViewport.GetComponent<RectTransform>().rect.height
+                    : 0f;
+                float scroll = viewportHeight * PhotoScrollRange * progress;
+                Vector2 scrollDirection = trainingMode == PhotoTrainingMode.SitToStand
+                    ? Vector2.down
+                    : trainingMode == PhotoTrainingMode.ShallowSquat
+                        ? Vector2.up
+                        : Vector2.zero;
+                photoImage.rectTransform.anchoredPosition =
+                    photoBaseAnchoredPosition + scrollDirection * scroll;
+            }
 
             if (resultCard.activeSelf &&
                 session.State != S1TrainingRunState.Completed &&
@@ -600,7 +962,11 @@ namespace RehabPhotoGame
                 case S1TrainingRunState.Idle:
                     modalTitleText.text = "准备开始训练";
                     modalBodyText.text = CanStartTraining()
-                        ? "请选择目标次数。训练时照片会随伸膝动作逐渐变清晰。"
+                        ? trainingMode == PhotoTrainingMode.SitToStand
+                            ? "请选择训练模式和目标次数。双腿同步站起会让取景框逐渐升高。"
+                            : trainingMode == PhotoTrainingMode.ShallowSquat
+                                ? "请选择训练模式和目标次数。双腿同步浅蹲会让取景画面逐渐降低。"
+                                : "请选择训练模式和目标次数。照片会随伸膝动作逐渐变清晰。"
                         : "请先打开“设备设置”，连接四个传感器并完成站姿标定。";
                     SetButtonLabel(modalPrimaryButton, "开始训练");
                     modalPrimaryButton.interactable = CanStartTraining();
@@ -611,7 +977,12 @@ namespace RehabPhotoGame
                     modalTitleText.text = "训练已暂停";
                     modalBodyText.text =
                         $"已经拍摄 {session.CompletedRepetitions} / " +
-                        $"{session.TargetRepetitions} 张。可以先放松，继续时请让小腿自然下垂。";
+                        $"{session.TargetRepetitions} 张。" +
+                        (trainingMode == PhotoTrainingMode.SitToStand
+                            ? "可以先休息，继续时请重新坐稳并让双脚着地。"
+                            : trainingMode == PhotoTrainingMode.ShallowSquat
+                                ? "可以先休息，继续时请重新站稳并让双脚平行着地。"
+                                : "可以先放松，继续时请让小腿自然下垂。");
                     SetButtonLabel(modalPrimaryButton, "继续训练");
                     modalPrimaryButton.interactable = MotionReady();
                     modalSecondaryButton.gameObject.SetActive(true);
@@ -621,8 +992,12 @@ namespace RehabPhotoGame
                 case S1TrainingRunState.Completed:
                     modalTitleText.text = "本组训练完成";
                     modalBodyText.text =
-                        $"已完成 {session.CompletedRepetitions} 次远景拍摄。" +
-                        "请慢慢放下小腿并休息一下。";
+                        $"已完成 {session.CompletedRepetitions} 次" +
+                        (trainingMode == PhotoTrainingMode.SitToStand
+                            ? "高处拍摄。请缓慢坐回并休息一下。"
+                            : trainingMode == PhotoTrainingMode.ShallowSquat
+                                ? "低处拍摄。请缓慢站直并休息一下。"
+                                : "远景拍摄。请慢慢放下小腿并休息一下。");
                     SetButtonLabel(modalPrimaryButton, "再练一组");
                     modalPrimaryButton.interactable = MotionReady();
                     modalSecondaryButton.gameObject.SetActive(true);
@@ -643,9 +1018,25 @@ namespace RehabPhotoGame
 
         private void RefreshLegButtons()
         {
+            bool showLegSelection =
+                trainingMode == PhotoTrainingMode.SeatedKneeExtension;
+            leftLegButton.gameObject.SetActive(showLegSelection);
+            rightLegButton.gameObject.SetActive(showLegSelection);
+            if (!showLegSelection) return;
             bool right = snapshot.Leg == TrainingLeg.Right;
             StyleSelection(leftLegButton, !right);
             StyleSelection(rightLegButton, right);
+        }
+
+        private void RefreshModeButtons()
+        {
+            bool kneeExtension =
+                trainingMode == PhotoTrainingMode.SeatedKneeExtension;
+            StyleSelection(kneeModeButton, kneeExtension);
+            StyleSelection(sitToStandModeButton,
+                trainingMode == PhotoTrainingMode.SitToStand);
+            StyleSelection(shallowSquatModeButton,
+                trainingMode == PhotoTrainingMode.ShallowSquat);
         }
 
         private string FriendlyInstruction()
@@ -655,9 +1046,19 @@ namespace RehabPhotoGame
             {
                 case S1TrainingRunState.Idle: return "设置目标次数，然后开始训练";
                 case S1TrainingRunState.Paused: return "训练已暂停，可以先放松";
-                case S1TrainingRunState.Completed: return "本组完成，请慢慢放下小腿";
+                case S1TrainingRunState.Completed:
+                    return trainingMode == PhotoTrainingMode.SitToStand
+                        ? "本组完成，请缓慢坐回并休息"
+                        : trainingMode == PhotoTrainingMode.ShallowSquat
+                            ? "本组完成，请缓慢站直并休息"
+                            : "本组完成，请慢慢放下小腿";
                 case S1TrainingRunState.Ended: return "训练已结束";
             }
+
+            if (trainingMode == PhotoTrainingMode.SitToStand)
+                return SitToStandInstruction();
+            if (trainingMode == PhotoTrainingMode.ShallowSquat)
+                return ShallowSquatInstruction();
 
             if (snapshot.IsSwitchingLeg)
                 return $"请坐稳，让{LegName(snapshot.Leg)}小腿自然下垂";
@@ -686,6 +1087,27 @@ namespace RehabPhotoGame
                 case S1TrainingRunState.Completed: return "● 本组完成";
                 case S1TrainingRunState.Ended: return "● 已结束";
             }
+            if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                switch (sitToStandSnapshot.Stage)
+                {
+                    case SitToStandStage.Preparing: return "● 准备：坐稳并让双脚着地";
+                    case SitToStandStage.Rising: return "● 起身：双腿同步缓慢伸直";
+                    case SitToStandStage.Holding: return "● 保持：站稳后自动拍摄";
+                    default: return "● 返回：缓慢坐回准备姿势";
+                }
+            }
+            if (trainingMode == PhotoTrainingMode.ShallowSquat)
+            {
+                switch (shallowSquatSnapshot.Stage)
+                {
+                    case ShallowSquatStage.Preparing: return "● 准备：站稳并让双脚平行";
+                    case ShallowSquatStage.Lowering: return "● 下蹲：双腿同步缓慢屈曲";
+                    case ShallowSquatStage.Holding: return "● 保持：浅蹲稳定后自动拍摄";
+                    case ShallowSquatStage.TooDeep: return "● 调整：回浅一点后重新保持";
+                    default: return "● 返回：双腿同步缓慢站直";
+                }
+            }
             if (snapshot.IsSwitchingLeg) return "● 正在确认准备姿势";
             switch (snapshot.Stage)
             {
@@ -699,13 +1121,43 @@ namespace RehabPhotoGame
         private string PhotoPrompt()
         {
             if (session.State == S1TrainingRunState.Idle)
-                return "开始训练后，抬腿会让照片逐渐清晰";
+                return trainingMode == PhotoTrainingMode.SitToStand
+                    ? "开始训练后，双腿站起会让取景框逐渐升高"
+                    : trainingMode == PhotoTrainingMode.ShallowSquat
+                        ? "开始训练后，双腿浅蹲会让取景画面逐渐降低"
+                        : "开始训练后，抬腿会让照片逐渐清晰";
             if (session.State == S1TrainingRunState.Paused)
-                return "训练暂停，当前对焦进度不会继续";
+                return trainingMode == PhotoTrainingMode.SitToStand
+                    ? "训练暂停，当前取景高度不会继续"
+                    : trainingMode == PhotoTrainingMode.ShallowSquat
+                        ? "训练暂停，当前降低进度不会继续"
+                        : "训练暂停，当前对焦进度不会继续";
             if (session.State == S1TrainingRunState.Completed)
                 return "本组拍摄完成";
             if (session.State == S1TrainingRunState.Ended)
                 return "训练已结束";
+            if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                if (!sitToStandSnapshot.IsDataValid)
+                    return "信号暂时中断，取景高度已冻结";
+                if (sitToStandSnapshot.Stage == SitToStandStage.Holding)
+                    return "高处目标已进入画面，请站稳等待快门";
+                if (sitToStandSnapshot.Stage == SitToStandStage.Returning)
+                    return "高处照片已拍好，请缓慢坐回";
+                return "双腿同步伸直，让高处目标进入取景框";
+            }
+            if (trainingMode == PhotoTrainingMode.ShallowSquat)
+            {
+                if (!shallowSquatSnapshot.IsDataValid)
+                    return ShallowSquatInstruction();
+                if (shallowSquatSnapshot.Stage == ShallowSquatStage.TooDeep)
+                    return "已超出浅蹲范围，请回浅一点；保持计时已清零";
+                if (shallowSquatSnapshot.Stage == ShallowSquatStage.Holding)
+                    return "低处目标已进入画面，请保持浅蹲等待快门";
+                if (shallowSquatSnapshot.Stage == ShallowSquatStage.Returning)
+                    return "低处照片已拍好，请双腿同步站直";
+                return "双腿同步屈曲，让低处目标进入取景框";
+            }
             if (!snapshot.IsDataValid)
                 return "信号暂时中断，对焦进度已冻结";
             if (snapshot.Stage == KneeExtensionStage.Holding)
@@ -713,6 +1165,64 @@ namespace RehabPhotoGame
             if (snapshot.Stage == KneeExtensionStage.Returning)
                 return "照片已拍好，请慢慢放下小腿";
             return "缓慢伸膝，让远景逐渐清晰";
+        }
+
+        private string SitToStandInstruction()
+        {
+            if (!sitToStandSnapshot.IsDataValid)
+                return FriendlyBlockReason(sitToStandSnapshot.BlockReason);
+            switch (sitToStandSnapshot.Stage)
+            {
+                case SitToStandStage.Preparing:
+                    return "请坐稳，双脚平放地面，等待系统确认";
+                case SitToStandStage.Rising:
+                    return "左右腿同步缓慢站起，让取景框升高";
+                case SitToStandStage.Holding:
+                    return "很好，已经站稳，请保持等待快门";
+                default:
+                    return "拍摄完成，请缓慢坐回准备姿势";
+            }
+        }
+
+        private string ShallowSquatInstruction()
+        {
+            // 浅蹲直接展示动作层的具体原因，避免过深、单腿、辅助提示被阶段文案覆盖。
+            if (!string.IsNullOrEmpty(shallowSquatSnapshot.BlockReason))
+                return shallowSquatSnapshot.BlockReason;
+            switch (shallowSquatSnapshot.Stage)
+            {
+                case ShallowSquatStage.Preparing:
+                    return "请站稳，双脚平行着地，等待系统确认";
+                case ShallowSquatStage.Lowering:
+                    return "左右腿同步缓慢屈曲，让取景画面降低";
+                case ShallowSquatStage.Holding:
+                    return "很好，已到浅蹲目标，请保持等待快门";
+                case ShallowSquatStage.TooDeep:
+                    return "已超出浅蹲范围，请回浅一点后重新保持";
+                default:
+                    return "拍摄完成，请双腿同步缓慢站直";
+            }
+        }
+
+        private string CurrentAngleMetric()
+        {
+            if (trainingMode == PhotoTrainingMode.SitToStand)
+            {
+                if (!sitToStandSnapshot.IsDataValid)
+                    return "--";
+                return $"{sitToStandSnapshot.LeftKneeDeg:F0}° /\n" +
+                       $"{sitToStandSnapshot.RightKneeDeg:F0}°";
+            }
+            if (trainingMode == PhotoTrainingMode.ShallowSquat)
+            {
+                if (!shallowSquatSnapshot.IsDataValid)
+                    return "--";
+                return $"{shallowSquatSnapshot.LeftKneeDeg:F0}° /\n" +
+                       $"{shallowSquatSnapshot.RightKneeDeg:F0}°";
+            }
+            if (!snapshot.IsDataValid)
+                return "--";
+            return $"{snapshot.KneeAngleDeg:F0}°";
         }
 
         private static string FriendlyBlockReason(string reason)
@@ -724,6 +1234,9 @@ namespace RehabPhotoGame
             if (value.Contains("标定") || value.Contains("驱动") ||
                 value.Contains("串口"))
                 return "请先完成设备连接和站姿标定";
+            if (value.Contains("站直") || value.Contains("浅蹲") ||
+                value.Contains("同步") || value.Contains("过深"))
+                return value;
             if (value.Contains("坐稳") || value.Contains("坐位") ||
                 value.Contains("大腿"))
                 return "请坐稳，让大腿保持自然水平";
@@ -732,7 +1245,14 @@ namespace RehabPhotoGame
 
         private void LoadPhotoResources()
         {
-            sourcePhoto = Resources.Load<Texture2D>(PhotoResource);
+            distantPhoto = Resources.Load<Texture2D>(PhotoResource);
+            highPhotos = new Texture2D[HighPhotoResources.Length];
+            for (int i = 0; i < HighPhotoResources.Length; i++)
+                highPhotos[i] = Resources.Load<Texture2D>(HighPhotoResources[i]);
+            lowPhotos = new Texture2D[LowPhotoResources.Length];
+            for (int i = 0; i < LowPhotoResources.Length; i++)
+                lowPhotos[i] = Resources.Load<Texture2D>(LowPhotoResources[i]);
+            SelectActivePhoto();
             Shader shader = Resources.Load<Shader>(ShaderResource);
             if (shader == null)
                 shader = Shader.Find("Hidden/RehabPhotoGame/FocusBlur");
@@ -741,7 +1261,7 @@ namespace RehabPhotoGame
 
             if (sourcePhoto == null)
             {
-                photoPromptText.text = "远景素材未加载，请联系工作人员";
+                photoPromptText.text = "摄影素材未加载，请联系工作人员";
                 return;
             }
 
@@ -759,7 +1279,8 @@ namespace RehabPhotoGame
         private void UpdatePhotoTexture()
         {
             if (sourcePhoto == null || focusedPhoto == null) return;
-            if (blurMaterial == null)
+            if (blurMaterial == null ||
+                trainingMode != PhotoTrainingMode.SeatedKneeExtension)
             {
                 Graphics.Blit(sourcePhoto, focusedPhoto);
                 return;
@@ -767,6 +1288,62 @@ namespace RehabPhotoGame
             blurMaterial.SetFloat(
                 "_BlurPixels", Mathf.Lerp(18f, 0f, focusSession.Focus01));
             Graphics.Blit(sourcePhoto, focusedPhoto, blurMaterial);
+        }
+
+        private void SelectActivePhoto()
+        {
+            if (trainingMode == PhotoTrainingMode.SeatedKneeExtension)
+            {
+                sourcePhoto = distantPhoto;
+                return;
+            }
+
+            if (trainingMode == PhotoTrainingMode.ShallowSquat)
+            {
+                SelectFromPhotoSet(lowPhotos, AvailableLowPhotoCount());
+                return;
+            }
+
+            SelectFromPhotoSet(highPhotos, AvailableHighPhotoCount());
+        }
+
+        private void SelectFromPhotoSet(Texture2D[] photos, int available)
+        {
+            if (available <= 0)
+            {
+                sourcePhoto = distantPhoto;
+                return;
+            }
+
+            int selected = session.CompletedRepetitions % available;
+            for (int i = 0, seen = 0; i < photos.Length; i++)
+            {
+                if (photos[i] == null) continue;
+                if (seen == selected)
+                {
+                    sourcePhoto = photos[i];
+                    return;
+                }
+                seen++;
+            }
+        }
+
+        private int AvailableHighPhotoCount()
+        {
+            if (highPhotos == null) return 0;
+            int count = 0;
+            for (int i = 0; i < highPhotos.Length; i++)
+                if (highPhotos[i] != null) count++;
+            return count;
+        }
+
+        private int AvailableLowPhotoCount()
+        {
+            if (lowPhotos == null) return 0;
+            int count = 0;
+            for (int i = 0; i < lowPhotos.Length; i++)
+                if (lowPhotos[i] != null) count++;
+            return count;
         }
 
         private void CreateShutterAudio()
@@ -796,8 +1373,22 @@ namespace RehabPhotoGame
 
         private bool CanStartTraining()
         {
-            return MotionReady() ||
-                   (motionUI != null && motionUI.CanBeginDrivingFromFormalUI);
+            bool runtimeReady = trainingMode == PhotoTrainingMode.SitToStand
+                ? sitToStandTraining != null
+                : trainingMode == PhotoTrainingMode.ShallowSquat
+                    ? shallowSquatTraining != null
+                    : training != null;
+            return runtimeReady && (MotionReady() ||
+                   (motionUI != null && motionUI.CanBeginDrivingFromFormalUI));
+        }
+
+        private float ActiveSensorTimeout()
+        {
+            if (trainingMode == PhotoTrainingMode.SitToStand && sitToStandTraining != null)
+                return sitToStandTraining.SensorTimeoutSeconds;
+            if (trainingMode == PhotoTrainingMode.ShallowSquat && shallowSquatTraining != null)
+                return shallowSquatTraining.SensorTimeoutSeconds;
+            return training != null ? training.SensorTimeoutSeconds : 2.2f;
         }
 
         private string DeviceChip(MotionCaptureState state, int index, string label)
@@ -809,7 +1400,7 @@ namespace RehabPhotoGame
             if (age < 0f)
                 return $"<color=#C7D1CB>{label} ○</color>";
 
-            float timeout = training != null ? training.SensorTimeoutSeconds : 2.2f;
+            float timeout = ActiveSensorTimeout();
             float slowThreshold = Mathf.Max(1f, timeout * 0.6f);
             if (age <= slowThreshold)
                 return $"<color=#55A96F>{label} ●</color>";
@@ -821,7 +1412,7 @@ namespace RehabPhotoGame
         private bool HasStaleLowerBodySensor(MotionCaptureState state)
         {
             if (state == null || motionCapture == null) return true;
-            float timeout = training != null ? training.SensorTimeoutSeconds : 2.2f;
+            float timeout = ActiveSensorTimeout();
             for (int index = LowerBodyPoseDriver.LeftThighIndex;
                  index <= LowerBodyPoseDriver.RightCalfIndex;
                  index++)
@@ -998,14 +1589,14 @@ namespace RehabPhotoGame
             string title, string value, Vector2 anchorMin, Vector2 anchorMax)
         {
             GameObject panel = CreateImage(parent, name, anchorMin, anchorMax,
-                new Color(PaleGreen.r, PaleGreen.g, PaleGreen.b, 0.58f));
+                new Color(PanelNavyLight.r, PanelNavyLight.g, PanelNavyLight.b, 0.96f));
             CreateImage(panel.transform, "Accent",
                 new Vector2(0f, 0f), new Vector2(0.025f, 1f), Green);
             return CreateText(panel.transform, "Value",
-                $"<size=18><color=#64776D>{title}</color></size>\n" +
+                $"<size=16><color=#9DB0BD>{title}</color></size>\n" +
                 $"<size=32><b>{value}</b></size>",
                 new Vector2(0.08f, 0.08f), new Vector2(0.94f, 0.92f),
-                24, FontStyles.Normal, Green, TextAlignmentOptions.Center);
+                22, FontStyles.Normal, BrightGreen, TextAlignmentOptions.Center);
         }
 
         private static void SetRect(RectTransform rect,
@@ -1049,6 +1640,22 @@ namespace RehabPhotoGame
             public string leg;
             public int sessionCompleted, sessionTarget;
             public float kneeAngleDeg, targetKneeDeg, holdSeconds, focus01;
+        }
+
+        [Serializable]
+        private sealed class SitToStandCaptureDiagnostic
+        {
+            public int sessionCompleted, sessionTarget;
+            public float progress, holdSeconds;
+            public float leftThighDeg, leftKneeDeg, rightThighDeg, rightKneeDeg;
+        }
+
+        [Serializable]
+        private sealed class ShallowSquatCaptureDiagnostic
+        {
+            public int sessionCompleted, sessionTarget;
+            public float progress, holdSeconds;
+            public float leftThighDeg, leftKneeDeg, rightThighDeg, rightKneeDeg;
         }
     }
 }
