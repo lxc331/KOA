@@ -34,7 +34,8 @@ namespace RehabPhotoGame
         private const string RequiredChineseGlyphs =
             "中文公园摄影站坐姿伸膝等待设备连接开始训练暂停继续结束左右腿教练示范目标次数完成保持缓慢抬起放下照片清晰坐站高处低处浅蹲双脚着地同步起身屈曲回取景高度模式选择" +
             "信号异常冻结波动自动恢复回位正在检查传感器佩戴持续中断站直站稳稳定准备坐回已按屏幕提示" +
-            "组合练习步骤顺序重新本组调整下一组不用着急可以自己的节奏远景高处低处放下小腿完成返回保存";
+            "组合练习步骤顺序重新本组调整下一组不用着急可以自己的节奏远景高处低处放下小腿完成返回保存" +
+            "请选择本次内容仅连续已选择再训练";
 
         // 第三段客户验收界面采用深色认知训练风格；动作算法不依赖这些颜色。
         private static readonly Color DarkGreen = Hex("081A2A");
@@ -1470,9 +1471,7 @@ namespace RehabPhotoGame
         private bool CanStartTraining()
         {
             bool runtimeReady = s2Selected
-                ? training != null && sitToStandTraining != null && shallowSquatTraining != null &&
-                    s2Settings != null && s2Settings.IsValid && distantPhoto != null &&
-                    AvailableHighPhotoCount() > 0 && AvailableLowPhotoCount() > 0
+                ? S2RuntimeReady()
                 : trainingMode == PhotoTrainingMode.SitToStand
                 ? sitToStandTraining != null
                 : trainingMode == PhotoTrainingMode.ShallowSquat

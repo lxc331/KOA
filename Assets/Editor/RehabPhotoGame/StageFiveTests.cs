@@ -130,15 +130,20 @@ namespace RehabPhotoGame.Editor
             Check(!flow.RecordCapture(1.5), "尚未回位再次拍照");
             Check(flow.CompleteReturnPreparation(2) && flow.AllowsCapture,
                 "现有动作状态确认回位后没有进入下一次");
-            Equal("拍照完成，请缓慢站直并站稳。",
+            Equal("已拍照，请站稳。",
                 TrainingVoicePrompts.Text(TrainingVoiceCue.PhotoCompletedReturn,
                     PhotoTrainingMode.ShallowSquat));
-            Equal("准备完成，请开始下一次浅蹲。",
+            Equal("请开始下一次浅蹲。",
                 TrainingVoicePrompts.Text(TrainingVoiceCue.ReadyForNext,
                     PhotoTrainingMode.ShallowSquat));
-            Check(TrainingVoicePrompts.Text(TrainingVoiceCue.SignalRecovering,
-                    PhotoTrainingMode.ShallowSquat).Contains("正在恢复"),
-                "信号语音没有说明冻结恢复状态");
+            Equal("", TrainingVoicePrompts.Text(TrainingVoiceCue.SignalRecovering,
+                PhotoTrainingMode.ShallowSquat));
+            Equal("", TrainingVoicePrompts.Text(TrainingVoiceCue.SignalRecovered,
+                PhotoTrainingMode.ShallowSquat));
+            Check(TrainingVoicePrompts.IsSilent(TrainingVoiceCue.SignalRecovering) &&
+                TrainingVoicePrompts.IsSilent(TrainingVoiceCue.SignalRecovered) &&
+                !TrainingVoicePrompts.IsSilent(TrainingVoiceCue.SignalError),
+                "短时信号波动没有静音或长时异常也被误静音");
         }
 
         private static void SafetyPriority()

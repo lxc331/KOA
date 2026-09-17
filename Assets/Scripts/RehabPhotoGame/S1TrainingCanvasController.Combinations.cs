@@ -9,11 +9,13 @@ namespace RehabPhotoGame
     {
         private readonly S2CombinationSession combination = new S2CombinationSession();
         private S2CombinationSettings s2Settings;
+        private S2TrainingPlan s2Plan = S2TrainingPlan.AThenB;
         private bool s2Selected;
         private S2CombinationStep activatedS2Step = S2CombinationStep.Completed;
         private string s2TransitionHint = "";
         private string s2PhotoError = "";
         private Button s1StageButton, s2StageButton, s2RestartButton, s2SkipButton;
+        private Button s2AOnlyButton, s2BOnlyButton, s2BothButton;
         private TMP_Text s2PlanText, s2StepsText, s2AlbumText;
         private GameObject s2StepPanel, s2ActionControls, s2AlbumPanel;
         private RawImage s2AlbumFirst, s2AlbumSecond;
@@ -33,9 +35,21 @@ namespace RehabPhotoGame
                 new Vector2(.52f, .72f), Vector2.one, PaleGreen, DarkGreen);
             s1StageButton.onClick.AddListener(() => SelectGameStage(false));
             s2StageButton.onClick.AddListener(() => SelectGameStage(true));
-            s2PlanText = CreateText(parent, "S2 Plan", "组合 A：伸膝 → 放下 → 坐站\n组合 B：浅蹲 → 站回",
-                new Vector2(0, .34f), new Vector2(1, .70f), 16, FontStyles.Bold, DarkGreen, TextAlignmentOptions.Center);
+            s2PlanText = CreateText(parent, "S2 Plan", "请选择本次训练内容",
+                new Vector2(0, .63f), new Vector2(1, .71f), 14, FontStyles.Bold, DarkGreen, TextAlignmentOptions.Center);
             s2PlanText.gameObject.SetActive(false);
+            s2AOnlyButton = CreateButton(parent, "S2 A Only", "仅组合 A",
+                new Vector2(0, .34f), new Vector2(.31f, .61f), PaleGreen, DarkGreen);
+            s2BOnlyButton = CreateButton(parent, "S2 B Only", "仅组合 B",
+                new Vector2(.345f, .34f), new Vector2(.655f, .61f), PaleGreen, DarkGreen);
+            s2BothButton = CreateButton(parent, "S2 A Then B", "A + B 连续",
+                new Vector2(.69f, .34f), new Vector2(1, .61f), Green, Color.white);
+            s2AOnlyButton.onClick.AddListener(() => SelectS2Plan(S2TrainingPlan.AOnly));
+            s2BOnlyButton.onClick.AddListener(() => SelectS2Plan(S2TrainingPlan.BOnly));
+            s2BothButton.onClick.AddListener(() => SelectS2Plan(S2TrainingPlan.AThenB));
+            s2AOnlyButton.gameObject.SetActive(false);
+            s2BOnlyButton.gameObject.SetActive(false);
+            s2BothButton.gameObject.SetActive(false);
         }
 
         private void BuildS2Controls(Transform parent)
@@ -91,12 +105,14 @@ namespace RehabPhotoGame
 
         private void PrepareS2Setup()
         {
-            trainingMode = PhotoTrainingMode.SeatedKneeExtension;
-            training?.SetTrainingModeActive(true, "s2_setup");
+            bool startsWithB = s2Plan == S2TrainingPlan.BOnly;
+            trainingMode = startsWithB ? PhotoTrainingMode.ShallowSquat : PhotoTrainingMode.SeatedKneeExtension;
+            training?.SetTrainingModeActive(!startsWithB, "s2_setup");
             training?.SetSessionPaused(true, "s2_setup");
             sitToStandTraining?.SetModeActive(false, "s2_setup");
-            shallowSquatTraining?.SetModeActive(false, "s2_setup");
-            session.SetTarget(s2Settings.groups_a + s2Settings.groups_b);
+            shallowSquatTraining?.SetModeActive(startsWithB, "s2_setup");
+            shallowSquatTraining?.SetSessionPaused(true, "s2_setup");
+            session.SetTarget(S2PlannedTarget());
             activatedS2Step = S2CombinationStep.Completed;
             s2TransitionHint = "";
             s2PhotoError = "";
@@ -110,9 +126,31 @@ namespace RehabPhotoGame
         private void ChangeS2Target(int delta)
         {
             if (flow.State != TrainingFlowState.Setup) return;
-            s2Settings.groups_a = Mathf.Clamp(s2Settings.groups_a + delta, 1, 5);
-            s2Settings.groups_b = Mathf.Clamp(s2Settings.groups_b + delta, 1, 5);
-            session.SetTarget(s2Settings.groups_a + s2Settings.groups_b);
+            if (s2Plan != S2TrainingPlan.BOnly)
+                s2Settings.groups_a = Mathf.Clamp(s2Settings.groups_a + delta, 1, 5);
+            if (s2Plan != S2TrainingPlan.AOnly)
+                s2Settings.groups_b = Mathf.Clamp(s2Settings.groups_b + delta, 1, 5);
+            session.SetTarget(S2PlannedTarget());
+        }
+
+        private void SelectS2Plan(S2TrainingPlan selectedPlan)
+        {
+            if (!s2Selected || flow.State != TrainingFlowState.Setup || session.State != S1TrainingRunState.Idle) return;
+            s2Plan = selectedPlan;
+            PrepareS2Setup();
+            RefreshAllVisuals();
+        }
+
+        private int S2PlannedTarget() => s2Plan == S2TrainingPlan.AOnly ? s2Settings.groups_a :
+            s2Plan == S2TrainingPlan.BOnly ? s2Settings.groups_b : s2Settings.groups_a + s2Settings.groups_b;
+
+        private bool S2RuntimeReady()
+        {
+            if (s2Settings == null || !s2Settings.IsValid) return false;
+            bool aReady = training != null && sitToStandTraining != null && distantPhoto != null && AvailableHighPhotoCount() > 0;
+            bool bReady = shallowSquatTraining != null && AvailableLowPhotoCount() > 0;
+            return s2Plan == S2TrainingPlan.AOnly ? aReady :
+                s2Plan == S2TrainingPlan.BOnly ? bReady : aReady && bReady;
         }
 
         private void RefreshS2Setup()
@@ -126,16 +164,33 @@ namespace RehabPhotoGame
             sitToStandModeButton.gameObject.SetActive(!s2Selected);
             shallowSquatModeButton.gameObject.SetActive(!s2Selected);
             s2PlanText.gameObject.SetActive(s2Selected);
-            targetControls.transform.Find("Target Label").GetComponent<TMP_Text>().text = s2Selected ? "每个组合组数" : "照片目标";
+            s2AOnlyButton.gameObject.SetActive(s2Selected);
+            s2BOnlyButton.gameObject.SetActive(s2Selected);
+            s2BothButton.gameObject.SetActive(s2Selected);
+            s2AOnlyButton.interactable = s2BOnlyButton.interactable = s2BothButton.interactable = setup;
+            if (s2Selected)
+            {
+                StyleSelection(s2AOnlyButton, s2Plan == S2TrainingPlan.AOnly);
+                StyleSelection(s2BOnlyButton, s2Plan == S2TrainingPlan.BOnly);
+                StyleSelection(s2BothButton, s2Plan == S2TrainingPlan.AThenB);
+            }
+            targetControls.transform.Find("Target Label").GetComponent<TMP_Text>().text = s2Selected ? "本次组数" : "照片目标";
             if (!s2Selected) { targetValueText.fontSize = 24; return; }
-            targetValueText.text = $"{s2Settings.groups_a}+{s2Settings.groups_b}组";
+            targetValueText.text = s2Plan == S2TrainingPlan.AOnly ? $"A {s2Settings.groups_a}组" :
+                s2Plan == S2TrainingPlan.BOnly ? $"B {s2Settings.groups_b}组" : $"{s2Settings.groups_a}+{s2Settings.groups_b}组";
             targetValueText.fontSize = 20;
-            targetMinusButton.interactable = s2Settings.groups_a > 1 && s2Settings.groups_b > 1;
-            targetPlusButton.interactable = s2Settings.groups_a < 5 && s2Settings.groups_b < 5;
+            targetMinusButton.interactable = s2Plan == S2TrainingPlan.AOnly ? s2Settings.groups_a > 1 :
+                s2Plan == S2TrainingPlan.BOnly ? s2Settings.groups_b > 1 : s2Settings.groups_a > 1 && s2Settings.groups_b > 1;
+            targetPlusButton.interactable = s2Plan == S2TrainingPlan.AOnly ? s2Settings.groups_a < 5 :
+                s2Plan == S2TrainingPlan.BOnly ? s2Settings.groups_b < 5 : s2Settings.groups_a < 5 && s2Settings.groups_b < 5;
             modalTitleText.text = "S2 组合摄影 · 训练前准备";
-            modalBodyText.text = "先完成四传感器检查、本人确认和站姿标定。\n" +
-                $"组合 A {s2Settings.groups_a} 组：伸膝对焦 → 放下 → 坐站拍高处\n" +
-                $"组合 B {s2Settings.groups_b} 组：站稳 → 浅蹲拍低处 → 站回\n" +
+            string planLine = s2Plan == S2TrainingPlan.AOnly
+                ? $"已选择仅组合 A（{s2Settings.groups_a} 组）：伸膝对焦 → 放下 → 坐站拍高处\n"
+                : s2Plan == S2TrainingPlan.BOnly
+                    ? $"已选择仅组合 B（{s2Settings.groups_b} 组）：站稳 → 浅蹲拍低处 → 站回\n"
+                    : $"已选择 A+B：A {s2Settings.groups_a} 组完成后，再训练 B {s2Settings.groups_b} 组\n";
+            modalBodyText.text = "请在下方选择本次训练内容，再完成四传感器检查、本人确认和站姿标定。\n" +
+                planLine +
                 "停顿较久只提示，可按自己的节奏继续。\n" + StartGateSummary();
         }
 
@@ -151,7 +206,7 @@ namespace RehabPhotoGame
             session.Start();
             resultCard.SetActive(false);
             s2TransitionHint = "";
-            combination.Begin(s2Settings, flow.Result.active_seconds);
+            combination.Begin(s2Settings, s2Plan, flow.Result.active_seconds);
             flow.Result.combinations = combination.Result;
             ActivateS2Step(true);
             motionUI?.SetFormalConnectionPanelVisible(false);
@@ -220,10 +275,7 @@ namespace RehabPhotoGame
             if (!s2Selected || flow.Result == null) return;
             if (item.event_type == "combination_restarted") s2NeedsReset = true;
             if (item.event_type == "combination_transition_reminder")
-            {
                 s2TransitionHint = "不用着急，可以按自己的节奏继续。";
-                voiceGuide?.SpeakText("s2_transition_reminder", s2TransitionHint);
-            }
             if (item.event_type == "combination_low_shutter")
                 ShowS2Capture("低处已拍，请缓慢站回\n站回后生成组合照片", true);
             if (item.photo != null)
@@ -332,7 +384,13 @@ namespace RehabPhotoGame
 
         private void SpeakS2Step()
         {
-            voiceGuide?.SpeakText("s2_" + combination.Step.ToString().ToLowerInvariant(), S2StepInstruction());
+            string text = combination.Step == S2CombinationStep.RiseHigh ? "请缓慢站起。" :
+                combination.Step == S2CombinationStep.ReturnSitting ? "请缓慢坐回。" :
+                combination.Step == S2CombinationStep.StandingPreparation ? "请站稳。" :
+                combination.Step == S2CombinationStep.LowerLow ? "请缓慢浅蹲。" :
+                combination.Step == S2CombinationStep.ReturnStanding ? "请缓慢站回。" : "";
+            // 伸膝阶段已有动作层短提示，避免两个语音通道重复播报。
+            if (text != "") voiceGuide?.SpeakText("s2_" + combination.Step.ToString().ToLowerInvariant(), text);
         }
 
         private void RefreshS2Controls()
@@ -386,8 +444,13 @@ namespace RehabPhotoGame
         private string S2SummaryLine()
         {
             S2CombinationResult r = flow.Result.combinations;
-            return r == null ? "" : $"S2 组合 A {r.completed_a}/{r.config_snapshot.groups_a} 组 · B {r.completed_b}/{r.config_snapshot.groups_b} 组\n" +
-                $"主动跳过 {r.skipped_groups} 组 · 重新准备 {r.restart_count} 次\n";
+            if (r == null) return "";
+            string completed = r.training_plan == "a_only"
+                ? $"S2 仅组合 A {r.completed_a}/{r.config_snapshot.groups_a} 组\n"
+                : r.training_plan == "b_only"
+                    ? $"S2 仅组合 B {r.completed_b}/{r.config_snapshot.groups_b} 组\n"
+                    : $"S2 组合 A {r.completed_a}/{r.config_snapshot.groups_a} 组 · B {r.completed_b}/{r.config_snapshot.groups_b} 组\n";
+            return completed + $"主动跳过 {r.skipped_groups} 组 · 重新准备 {r.restart_count} 次\n";
         }
 
         private bool RetryS2Photos()

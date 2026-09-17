@@ -9,10 +9,17 @@ namespace RehabPhotoGame
         StandingPreparation, LowerLow, ReturnStanding, Completed
     }
 
+    public enum S2TrainingPlan
+    {
+        AOnly,
+        BOnly,
+        AThenB
+    }
+
     [Serializable]
     public sealed class S2CombinationSettings
     {
-        public string config_version = "stage6-combinations-v1";
+        public string config_version = "stage6-combinations-v2";
         public int groups_a = 5, groups_b = 5;
         public float transition_reminder_seconds = 5f;
         public bool IsValid => !string.IsNullOrWhiteSpace(config_version) &&
@@ -70,6 +77,7 @@ namespace RehabPhotoGame
     public sealed class S2CombinationResult
     {
         public string rule_version = S2CombinationSession.RuleVersion;
+        public string training_plan;
         public S2CombinationSettings config_snapshot;
         public int resolved_a, resolved_b, completed_a, completed_b, skipped_groups, restart_count;
         public int transition_reminders;
@@ -94,8 +102,9 @@ namespace RehabPhotoGame
     /// <summary>S2 游戏编排：只消费现有状态机事件，安全许可由第五段数据门禁提供。</summary>
     public sealed class S2CombinationSession
     {
-        public const string RuleVersion = "stage6-sequence-v1";
+        public const string RuleVersion = "stage6-sequence-v2";
         private S2CombinationSettings settings;
+        private S2TrainingPlan plan;
         private S2ActionFrame previous;
         private bool bound, readyObserved, reminderRaised, reprepareAfterGate;
         private double stepStarted, lastActiveTime;
@@ -103,6 +112,7 @@ namespace RehabPhotoGame
         private string firstResource = "", sceneResource = "";
         public S2CombinationStep Step { get; private set; } = S2CombinationStep.Completed;
         public S2CombinationResult Result { get; private set; }
+        public S2TrainingPlan Plan => plan;
         public bool IsRunning => Result != null && Step != S2CombinationStep.Completed;
         public bool IsA => Step == S2CombinationStep.SeatedFocus || Step == S2CombinationStep.LowerLeg ||
             Step == S2CombinationStep.RiseHigh || Step == S2CombinationStep.ReturnSitting;
@@ -113,18 +123,28 @@ namespace RehabPhotoGame
             ? PhotoTrainingMode.SitToStand : IsA ? PhotoTrainingMode.SeatedKneeExtension : PhotoTrainingMode.ShallowSquat;
         public event Action<S2CombinationEvent> EventRaised;
 
-        public bool Begin(S2CombinationSettings config, double activeTime)
+        public bool Begin(S2CombinationSettings config, double activeTime) =>
+            Begin(config, S2TrainingPlan.AThenB, activeTime);
+
+        public bool Begin(S2CombinationSettings config, S2TrainingPlan selectedPlan, double activeTime)
         {
             if (IsRunning || config == null || !config.IsValid || !Finite(activeTime)) return false;
             settings = config.Copy();
-            Result = new S2CombinationResult { config_snapshot = settings.Copy() };
-            Step = S2CombinationStep.SeatedFocus;
+            plan = selectedPlan;
+            Result = new S2CombinationResult
+            {
+                config_snapshot = settings.Copy(),
+                training_plan = PlanCode(selectedPlan)
+            };
+            Step = selectedPlan == S2TrainingPlan.BOnly
+                ? S2CombinationStep.StandingPreparation
+                : S2CombinationStep.SeatedFocus;
             firstResource = sceneResource = "";
             bound = readyObserved = reminderRaised = false;
             reprepareAfterGate = false;
             stepStarted = activeTime;
             lastActiveTime = activeTime;
-            Emit("combination_started", "ordered_a_then_b");
+            Emit("combination_started", "selected_" + Result.training_plan);
             return true;
         }
 
@@ -205,6 +225,7 @@ namespace RehabPhotoGame
                         Result.completed_a++;
                         returnBaseline = frame.Completed;
                         Move(Result.resolved_a < settings.groups_a ? S2CombinationStep.ReturnSitting :
+                            plan == S2TrainingPlan.AOnly ? S2CombinationStep.Completed :
                             S2CombinationStep.StandingPreparation, activeTime, "high_photo_completed");
                     }
                     else if (readyObserved && !frame.Reference) Restart(activeTime, "seated_reference_lost");
@@ -274,6 +295,7 @@ namespace RehabPhotoGame
             {
                 Result.resolved_a++;
                 Move(Result.resolved_a < settings.groups_a ? S2CombinationStep.SeatedFocus :
+                    plan == S2TrainingPlan.AOnly ? S2CombinationStep.Completed :
                     S2CombinationStep.StandingPreparation, activeTime, "next_group_preparation");
             }
             else
@@ -335,5 +357,8 @@ namespace RehabPhotoGame
             completed_step = completedStep, completed_step_active_seconds = completedStepSeconds
         });
         private static bool Finite(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
+        private static string PlanCode(S2TrainingPlan selectedPlan) =>
+            selectedPlan == S2TrainingPlan.AOnly ? "a_only" :
+            selectedPlan == S2TrainingPlan.BOnly ? "b_only" : "a_then_b";
     }
 }

@@ -195,11 +195,7 @@ namespace RehabPhotoGame
         {
             TrainingFlowState before = flow.State;
             TickFlowHealth();
-            if (flow.State == TrainingFlowState.SignalRecovery && before != flow.State)
-                SpeakFlowCue(TrainingVoiceCue.SignalRecovering);
-            if (before == TrainingFlowState.SignalRecovery &&
-                flow.State == TrainingFlowState.Training)
-                SpeakFlowCue(TrainingVoiceCue.SignalRecovered);
+            // 短时信号波动仍冻结游戏并在界面显示，但不再反复播报语音。
             if (flow.State == TrainingFlowState.SensorError && before != flow.State)
             {
                 if (s2Selected) combination.Restart(flow.Result.active_seconds, "sensor_error_reprepare_not_error");

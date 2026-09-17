@@ -586,7 +586,7 @@ namespace RehabPhotoGame
                 $"leg={trainingLeg}, sensors={SensorPairLabel()}, source={source}");
 
             if (speak)
-                SpeakAction($"现在训练{LegName()}腿。请坐稳，小腿自然放下。", true);
+                SpeakAction($"请坐稳，训练{LegName()}腿。", true);
         }
 
         private void HandleActionVoice()
@@ -597,13 +597,13 @@ namespace RehabPhotoGame
             switch (stage)
             {
                 case KneeExtensionStage.Extending:
-                    SpeakAction($"请慢慢抬起{LegName()}小腿，逐渐伸直膝盖。");
+                    SpeakAction($"请抬起{LegName()}小腿。");
                     break;
                 case KneeExtensionStage.Holding:
-                    SpeakAction("很好，已经达到目标，请保持一下。");
+                    SpeakAction("到位，请保持。");
                     break;
                 case KneeExtensionStage.Returning:
-                    SpeakAction($"很好，请慢慢放下{LegName()}小腿。");
+                    SpeakAction($"请放下{LegName()}小腿。");
                     break;
             }
             previousStage = stage;
@@ -634,7 +634,7 @@ namespace RehabPhotoGame
                     "$v=$voices | Where-Object {$_.VoiceInfo.Culture.Name -like 'zh-*' -and $_.VoiceInfo.Gender -eq [System.Speech.Synthesis.VoiceGender]::Female} | Select-Object -First 1; " +
                     "if(-not $v){$v=$voices | Where-Object {$_.VoiceInfo.Gender -eq [System.Speech.Synthesis.VoiceGender]::Female} | Select-Object -First 1}; " +
                     "if($v){$s.SelectVoice($v.VoiceInfo.Name)}; " +
-                    "$s.Rate=-4; $s.Volume=80; $s.Speak('" + escaped + "');";
+                    "$s.Rate=1; $s.Volume=76; $s.Speak('" + escaped + "');";
 
                 speechProcess = Process.Start(new ProcessStartInfo
                 {

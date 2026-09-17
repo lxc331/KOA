@@ -22,6 +22,7 @@ namespace RehabPhotoGame.Editor
         public static void RunLogicTests()
         {
             Run("默认 A5+B5 配置复制并支持减量", Configuration);
+            Run("可选择仅 A、仅 B 或 A+B 连续训练", SelectablePlans);
             Run("不能跳过对焦与放下直接坐站拍摄", OrderedA);
             Run("A 对焦不计照片，放下后才解锁坐站", FocusThenLower);
             Run("A 高处只拍一次，多组间必须坐回", MultipleA);
@@ -45,10 +46,10 @@ namespace RehabPhotoGame.Editor
             public readonly S2CombinationSession Session = new S2CombinationSession();
             public readonly List<S2CombinationEvent> Events = new List<S2CombinationEvent>();
             public double Time;
-            public Trial(int a = 1, int b = 1)
+            public Trial(int a = 1, int b = 1, S2TrainingPlan plan = S2TrainingPlan.AThenB)
             {
                 Session.EventRaised += Events.Add;
-                Check(Session.Begin(new S2CombinationSettings { groups_a = a, groups_b = b }, 0), "启动失败");
+                Check(Session.Begin(new S2CombinationSettings { groups_a = a, groups_b = b }, plan, 0), "启动失败");
             }
             public void Feed(bool ready = false, bool holding = false, bool returning = false,
                 int completed = 0, int capture = 0, bool valid = true, bool reference = true,
@@ -97,6 +98,29 @@ namespace RehabPhotoGame.Editor
             Check(!settings.IsValid, "超出原型上限仍接受");
             settings.groups_b = 1; settings.transition_reminder_seconds = float.NaN;
             Check(!settings.IsValid, "NaN 仍接受");
+        }
+        private static void SelectablePlans()
+        {
+            var a = new Trial(1, 2, S2TrainingPlan.AOnly);
+            Check(a.Session.Step == S2CombinationStep.SeatedFocus && a.Session.Result.training_plan == "a_only",
+                "仅 A 没有从坐姿伸膝开始或计划未记录");
+            a.A();
+            Check(!a.Session.IsRunning && a.Session.Result.completed_a == 1 && a.Session.Result.completed_b == 0 &&
+                a.Session.CompletedPhotos == 1, "仅 A 完成后仍被迫进入 B");
+
+            var b = new Trial(2, 1, S2TrainingPlan.BOnly);
+            Check(b.Session.Step == S2CombinationStep.StandingPreparation &&
+                b.Session.RequiredMode == PhotoTrainingMode.ShallowSquat && b.Session.Result.training_plan == "b_only",
+                "仅 B 没有从站立准备开始或计划未记录");
+            b.Low();
+            Check(b.Session.Step == S2CombinationStep.ReturnStanding && b.Session.CompletedPhotos == 0,
+                "仅 B 在站回前提前生成照片");
+            b.Feed(completed: 1, capture: 1, reference: false);
+            Check(!b.Session.IsRunning && b.Session.Result.completed_a == 0 && b.Session.Result.completed_b == 1 &&
+                b.Session.CompletedPhotos == 1, "仅 B 未独立完成");
+
+            var both = new Trial();
+            Check(both.Session.Result.training_plan == "a_then_b", "原 A+B 默认计划不再兼容");
         }
         private static void OrderedA()
         {
@@ -299,6 +323,19 @@ namespace RehabPhotoGame.Editor
                 Field<Button>(ui, "s2StageButton").onClick.Invoke();
                 Check(Field<bool>(ui, "s2Selected") && !Field<Button>(ui, "modalPrimaryButton").interactable,
                     "S2 入口丢失或绕过训练前门禁");
+                Check(Field<Button>(ui, "s2AOnlyButton").gameObject.activeSelf &&
+                    Field<Button>(ui, "s2BOnlyButton").gameObject.activeSelf &&
+                    Field<Button>(ui, "s2BothButton").gameObject.activeSelf, "S2 训练内容选择入口未显示");
+                Field<Button>(ui, "s2BOnlyButton").onClick.Invoke();
+                Check(Field<S2TrainingPlan>(ui, "s2Plan") == S2TrainingPlan.BOnly &&
+                    Field<PhotoTrainingMode>(ui, "trainingMode") == PhotoTrainingMode.ShallowSquat &&
+                    Field<TMPro.TMP_Text>(ui, "targetValueText").text.StartsWith("B "),
+                    "仅 B 选择没有切到浅蹲准备或组数未联动");
+                Render(ui, "01-s2-preflight-b-only");
+                Field<Button>(ui, "s2BothButton").onClick.Invoke();
+                Check(Field<S2TrainingPlan>(ui, "s2Plan") == S2TrainingPlan.AThenB &&
+                    Field<PhotoTrainingMode>(ui, "trainingMode") == PhotoTrainingMode.SeatedKneeExtension,
+                    "A+B 选择没有恢复原组合起点");
                 Check(Field<GameObject>(ui, "s2AlbumPanel").transform.GetSiblingIndex() <
                     Field<GameObject>(ui, "modalOverlay").transform.GetSiblingIndex(), "相册遮挡模态窗口");
                 Check(Resources.Load<S2CombinationConfig>("RehabPhotoGame/S2CombinationConfig").settings.IsValid, "配置未加载");

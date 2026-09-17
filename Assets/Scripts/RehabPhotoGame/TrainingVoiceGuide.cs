@@ -23,24 +23,27 @@ namespace RehabPhotoGame
             {
                 case TrainingVoiceCue.PhotoCompletedReturn:
                     return mode == PhotoTrainingMode.ShallowSquat
-                        ? "拍照完成，请缓慢站直并站稳。"
+                        ? "已拍照，请站稳。"
                         : mode == PhotoTrainingMode.SitToStand
-                            ? "拍照完成，请缓慢坐回并坐稳。"
-                            : "拍照完成，请缓慢放下小腿并坐稳。";
+                            ? "已拍照，请坐稳。"
+                            : "已拍照，请放下小腿。";
                 case TrainingVoiceCue.SignalRecovering:
-                    return "信号波动，请保持稳定，正在恢复。";
+                    return "";
                 case TrainingVoiceCue.SignalRecovered:
-                    return "信号已恢复，请按屏幕提示继续。";
+                    return "";
                 case TrainingVoiceCue.ReadyForNext:
                     return mode == PhotoTrainingMode.ShallowSquat
-                        ? "准备完成，请开始下一次浅蹲。"
+                        ? "请开始下一次浅蹲。"
                         : mode == PhotoTrainingMode.SitToStand
-                            ? "准备完成，请开始下一次坐站。"
-                            : "准备完成，请开始下一次伸膝。";
+                            ? "请开始下一次坐站。"
+                            : "请开始下一次伸膝。";
                 default:
-                    return "信号持续中断，请检查传感器连接和佩戴。";
+                    return "信号中断，请检查传感器。";
             }
         }
+
+        public static bool IsSilent(TrainingVoiceCue cue) =>
+            cue == TrainingVoiceCue.SignalRecovering || cue == TrainingVoiceCue.SignalRecovered;
 
         public static string ResourcePath(TrainingVoiceCue cue, PhotoTrainingMode mode)
         {
@@ -50,9 +53,9 @@ namespace RehabPhotoGame
                 case TrainingVoiceCue.PhotoCompletedReturn:
                     return root + "photo_complete_" + ModeKey(mode);
                 case TrainingVoiceCue.SignalRecovering:
-                    return root + "signal_recovering";
+                    return "";
                 case TrainingVoiceCue.SignalRecovered:
-                    return root + "signal_recovered";
+                    return "";
                 case TrainingVoiceCue.ReadyForNext:
                     return root + "ready_" + ModeKey(mode);
                 default:
@@ -90,11 +93,13 @@ namespace RehabPhotoGame
             voiceSource.playOnAwake = false;
             voiceSource.loop = false;
             voiceSource.spatialBlend = 0f;
-            voiceSource.volume = 0.9f;
+            voiceSource.volume = 0.78f;
+            voiceSource.pitch = 1.08f;
         }
 
         public bool Speak(TrainingVoiceCue cue, PhotoTrainingMode mode)
         {
+            if (TrainingVoicePrompts.IsSilent(cue)) return false;
             string resourcePath = TrainingVoicePrompts.ResourcePath(cue, mode);
             string text = TrainingVoicePrompts.Text(cue, mode);
             string cueKey = cue + ":" + mode;
@@ -157,7 +162,7 @@ namespace RehabPhotoGame
                     "$voices=$s.GetInstalledVoices() | Where-Object {$_.Enabled}; " +
                     "$v=$voices | Where-Object {$_.VoiceInfo.Culture.Name -like 'zh-*'} | Select-Object -First 1; " +
                     "if($v){$s.SelectVoice($v.VoiceInfo.Name)}; " +
-                    "$s.Rate=-3; $s.Volume=85; $s.Speak('" + escaped + "');";
+                    "$s.Rate=2; $s.Volume=78; $s.Speak('" + escaped + "');";
                 speechProcess = Process.Start(new ProcessStartInfo
                 {
                     FileName = "powershell.exe",
