@@ -13,7 +13,8 @@ MonoBehaviour:
   m_Name: S2CombinationConfig
   m_EditorClassIdentifier:
   settings:
-    config_version: stage6-combinations-v2
+    config_version: stage6-combinations-v3
     groups_a: 5
     groups_b: 5
     transition_reminder_seconds: 5
+    b_high_feedback_seconds: 3

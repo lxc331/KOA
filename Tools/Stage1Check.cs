@@ -11,7 +11,7 @@ internal static class Stage1Check
             RehabPhotoGame.Editor.StageFourTests.RunLogicTests();
             RehabPhotoGame.Editor.StageFiveTests.RunLogicTests();
             RehabPhotoGame.Editor.StageSixTests.RunLogicTests();
-            Console.WriteLine("PASS: 77 pure logic scenarios. Unity-native integration tests require the Editor.");
+            Console.WriteLine("PASS: all pure logic scenarios. Unity-native integration tests require the Editor.");
             return 0;
         }
         catch (Exception exception)

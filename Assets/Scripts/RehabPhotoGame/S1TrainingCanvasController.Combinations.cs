@@ -19,6 +19,21 @@ namespace RehabPhotoGame
         private TMP_Text s2PlanText, s2StepsText, s2AlbumText;
         private GameObject s2StepPanel, s2ActionControls, s2AlbumPanel;
         private RawImage s2AlbumFirst, s2AlbumSecond;
+        // B 独立选材，不改变 A 和 S1 已验收的素材顺序。
+        private static readonly string[] S2BHighResources =
+        {
+            "RehabPhotoGame/Photos/B_High/birds_01",
+            "RehabPhotoGame/Photos/B_High/kite_01",
+            "RehabPhotoGame/Photos/B_High/lanterns_01",
+            "RehabPhotoGame/Photos/B_High/mountains_01"
+        };
+        private static readonly string[] S2BLowResources =
+        {
+            "RehabPhotoGame/Photos/C_Low/flowers_01",
+            "RehabPhotoGame/Photos/C_Low/leaves_01",
+            "RehabPhotoGame/Photos/C_Low/lotus_01",
+            "RehabPhotoGame/Photos/C_Low/butterflies_01"
+        };
 
         private void InitializeStageSix()
         {
@@ -106,11 +121,12 @@ namespace RehabPhotoGame
         private void PrepareS2Setup()
         {
             bool startsWithB = s2Plan == S2TrainingPlan.BOnly;
-            trainingMode = startsWithB ? PhotoTrainingMode.ShallowSquat : PhotoTrainingMode.SeatedKneeExtension;
+            trainingMode = startsWithB ? PhotoTrainingMode.SitToStand : PhotoTrainingMode.SeatedKneeExtension;
             training?.SetTrainingModeActive(!startsWithB, "s2_setup");
             training?.SetSessionPaused(true, "s2_setup");
-            sitToStandTraining?.SetModeActive(false, "s2_setup");
-            shallowSquatTraining?.SetModeActive(startsWithB, "s2_setup");
+            sitToStandTraining?.SetModeActive(startsWithB, "s2_setup");
+            sitToStandTraining?.SetSessionPaused(true, "s2_setup");
+            shallowSquatTraining?.SetModeActive(false, "s2_setup");
             shallowSquatTraining?.SetSessionPaused(true, "s2_setup");
             session.SetTarget(S2PlannedTarget());
             activatedS2Step = S2CombinationStep.Completed;
@@ -148,7 +164,8 @@ namespace RehabPhotoGame
         {
             if (s2Settings == null || !s2Settings.IsValid) return false;
             bool aReady = training != null && sitToStandTraining != null && distantPhoto != null && AvailableHighPhotoCount() > 0;
-            bool bReady = shallowSquatTraining != null && AvailableLowPhotoCount() > 0;
+            bool bReady = sitToStandTraining != null && shallowSquatTraining != null &&
+                SelectS2Resource(S2BHighResources, 0) != "" && SelectS2Resource(S2BLowResources, 0) != "";
             return s2Plan == S2TrainingPlan.AOnly ? aReady :
                 s2Plan == S2TrainingPlan.BOnly ? bReady : aReady && bReady;
         }
@@ -187,7 +204,7 @@ namespace RehabPhotoGame
             string planLine = s2Plan == S2TrainingPlan.AOnly
                 ? $"已选择仅组合 A（{s2Settings.groups_a} 组）：伸膝对焦 → 放下 → 坐站拍高处\n"
                 : s2Plan == S2TrainingPlan.BOnly
-                    ? $"已选择仅组合 B（{s2Settings.groups_b} 组）：站稳 → 浅蹲拍低处 → 站回\n"
+                    ? $"仅组合 B（{s2Settings.groups_b} 组）：坐稳 → 站起拍高处 → 提示太高 → 浅蹲拍低处 → 站回\n"
                     : $"已选择 A+B：A {s2Settings.groups_a} 组完成后，再训练 B {s2Settings.groups_b} 组\n";
             modalBodyText.text = "请在下方选择本次训练内容，再完成四传感器检查、本人确认和站姿标定。\n" +
                 planLine +
@@ -230,6 +247,8 @@ namespace RehabPhotoGame
         private void ActivateS2Step(bool forceReset = false)
         {
             if (!combination.IsRunning) return;
+            // A 结束时仍在坐站模式。进入 B 也必须清除旧坐姿参考，不能沿用 A 的返回态。
+            forceReset |= combination.Step == S2CombinationStep.SeatedPreparationB && activatedS2Step != combination.Step;
             PhotoTrainingMode mode = combination.RequiredMode;
             bool modeChanged = trainingMode != mode;
             if (forceReset) SuspendGameRuntimes("s2_reprepare");
@@ -276,6 +295,8 @@ namespace RehabPhotoGame
             if (item.event_type == "combination_restarted") s2NeedsReset = true;
             if (item.event_type == "combination_transition_reminder")
                 s2TransitionHint = "不用着急，可以按自己的节奏继续。";
+            if (item.event_type == "combination_high_shutter")
+                ShowS2Capture("高处已拍 · 拍得太高了\n接下来站稳，再浅蹲拍低处", true);
             if (item.event_type == "combination_low_shutter")
                 ShowS2Capture("低处已拍，请缓慢站回\n站回后生成组合照片", true);
             if (item.photo != null)
@@ -352,9 +373,17 @@ namespace RehabPhotoGame
         private void SelectS2Photo()
         {
             int group = combination.IsA ? combination.Result.resolved_a : combination.Result.resolved_b;
-            string scene = SelectS2Resource(combination.IsA ? HighPhotoResources : LowPhotoResources, group);
-            combination.SetPhotoResources(PhotoResource, scene);
-            sourcePhoto = trainingMode == PhotoTrainingMode.SeatedKneeExtension ? distantPhoto : Resources.Load<Texture2D>(scene);
+            if (combination.IsA)
+            {
+                string scene = SelectS2Resource(HighPhotoResources, group);
+                combination.SetPhotoResources(PhotoResource, scene);
+                sourcePhoto = trainingMode == PhotoTrainingMode.SeatedKneeExtension ? distantPhoto : Resources.Load<Texture2D>(scene);
+                return;
+            }
+            string high = SelectS2Resource(S2BHighResources, group);
+            string low = SelectS2Resource(S2BLowResources, group);
+            combination.SetPhotoResources(high, low);
+            sourcePhoto = Resources.Load<Texture2D>(combination.RequiredMode == PhotoTrainingMode.SitToStand ? high : low);
         }
 
         private static string SelectS2Resource(string[] paths, int group)
@@ -375,7 +404,10 @@ namespace RehabPhotoGame
                 case S2CombinationStep.LowerLeg: return "对焦完成，请缓慢放下小腿并坐稳";
                 case S2CombinationStep.RiseHigh: return "小腿已放下，请双脚着地，缓慢站起拍高处";
                 case S2CombinationStep.ReturnSitting: return "高处拍照完成，请缓慢坐回，准备下一组 A";
-                case S2CombinationStep.StandingPreparation: return "请先站直并站稳，准备组合 B";
+                case S2CombinationStep.SeatedPreparationB: return "请缓慢坐下并坐稳，双脚着地，准备组合 B";
+                case S2CombinationStep.RiseHighB: return "坐位准备完成，请缓慢站起，站稳拍摄高处景物";
+                case S2CombinationStep.HighPhotoFeedbackB: return "高处已拍，拍得太高了！接下来站稳，再浅蹲拍低处";
+                case S2CombinationStep.StandingPreparation: return "高处已拍，请先站直站稳，再缓慢浅蹲拍低处";
                 case S2CombinationStep.LowerLow: return "请缓慢浅蹲，进入低处目标后保持等待拍照";
                 case S2CombinationStep.ReturnStanding: return "低处拍照完成，请缓慢站直并站稳，完成组合 B";
                 default: return "组合计划完成，请先休息";
@@ -384,9 +416,10 @@ namespace RehabPhotoGame
 
         private void SpeakS2Step()
         {
-            string text = combination.Step == S2CombinationStep.RiseHigh ? "请缓慢站起。" :
+            string text = combination.Step == S2CombinationStep.RiseHigh || combination.Step == S2CombinationStep.RiseHighB ? "请缓慢站起。" :
                 combination.Step == S2CombinationStep.ReturnSitting ? "请缓慢坐回。" :
-                combination.Step == S2CombinationStep.StandingPreparation ? "请站稳。" :
+                combination.Step == S2CombinationStep.SeatedPreparationB ? "请先坐稳。" :
+                combination.Step == S2CombinationStep.HighPhotoFeedbackB ? "拍得太高了。" :
                 combination.Step == S2CombinationStep.LowerLow ? "请缓慢浅蹲。" :
                 combination.Step == S2CombinationStep.ReturnStanding ? "请缓慢站回。" : "";
             // 伸膝阶段已有动作层短提示，避免两个语音通道重复播报。
@@ -403,13 +436,14 @@ namespace RehabPhotoGame
             s2RestartButton.interactable = show && flow.AllowsCapture;
             s2SkipButton.interactable = show && flow.AllowsCapture && combination.Step != S2CombinationStep.ReturnSitting;
             if (show)
-                s2StepsText.text = (combination.IsA ? "A：伸膝对焦 → 放下 → 坐站高处" : "B：站稳 → 浅蹲低处 → 站回") +
+                s2StepsText.text = (combination.IsA ? "A：伸膝对焦 → 放下 → 坐站高处" : "B：坐稳 → 站起拍高处 → 浅蹲拍低处 → 站回") +
                     $"\n当前：{S2StepLabel()}  ·  第 {combination.GroupNumber} / {(combination.IsA ? s2Settings.groups_a : s2Settings.groups_b)} 组";
         }
 
         private string S2StepLabel()
         {
-            string[] labels = { "伸膝对焦", "放下小腿", "坐站拍高处", "坐回准备", "站立准备", "浅蹲拍低处", "返回站立", "完成" };
+            string[] labels = { "伸膝对焦", "放下小腿", "坐站拍高处", "坐回准备", "站稳衔接", "浅蹲拍低处", "返回站立", "完成",
+                "坐位准备", "站起拍高处", "拍得太高了" };
             return labels[(int)combination.Step];
         }
 
@@ -424,13 +458,19 @@ namespace RehabPhotoGame
             stageText.text = "● " + S2StepLabel();
             string actionHint = trainingMode == PhotoTrainingMode.SitToStand ? sitToStandSnapshot.BlockReason :
                 trainingMode == PhotoTrainingMode.ShallowSquat ? shallowSquatSnapshot.BlockReason : snapshot.BlockReason;
-            if (!string.IsNullOrWhiteSpace(actionHint)) stageText.text += " · " + actionHint;
+            if (combination.Step != S2CombinationStep.HighPhotoFeedbackB && !string.IsNullOrWhiteSpace(actionHint))
+                stageText.text += " · " + actionHint;
             if (s2TransitionHint != "") stageText.text += " · " + s2TransitionHint;
             sessionCountText.text = $"<size=16>组合照片 / 已处理组</size>\n<size=27><b>{combination.CompletedPhotos}张 / {combination.ResolvedGroups}组</b></size>";
-            selectedLegText.text = combination.IsA ? "组合 A：伸膝 + 坐站" : "组合 B：浅蹲 + 站回";
+            selectedLegText.text = combination.IsA ? "组合 A：伸膝 + 坐站" : "组合 B：坐站高处 + 浅蹲低处";
             coachInstructionText.text = combination.IsA
                 ? "① 坐稳，伸膝对焦并保持\n② 缓慢放下小腿\n③ 双脚着地，缓慢站起\n④ 站稳拍摄高处景物"
-                : "① 双脚平行，站直站稳\n② 缓慢浅蹲并保持\n③ 拍摄低处景物\n④ 缓慢站回，完成组合";
+                : "① 坐稳，双脚平放地面\n② 站起保持，拍摄高处\n③ 提示太高后，浅蹲拍低处\n④ 缓慢站回，完成组合";
+            if (combination.Step == S2CombinationStep.HighPhotoFeedbackB)
+            {
+                SetFill(holdBarFill, 0, .025f, .58f);
+                holdText.text = "<size=16>高处已拍</size>\n<size=26>等待提示</size>";
+            }
             if (combination.Step == S2CombinationStep.LowerLeg || combination.Step == S2CombinationStep.ReturnStanding ||
                 combination.Step == S2CombinationStep.ReturnSitting)
             {

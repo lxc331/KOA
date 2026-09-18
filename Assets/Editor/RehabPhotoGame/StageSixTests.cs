@@ -26,7 +26,10 @@ namespace RehabPhotoGame.Editor
             Run("不能跳过对焦与放下直接坐站拍摄", OrderedA);
             Run("A 对焦不计照片，放下后才解锁坐站", FocusThenLower);
             Run("A 高处只拍一次，多组间必须坐回", MultipleA);
-            Run("最后一组 A 保持站立进入 B", LastAToB);
+            Run("A 完成后进入 B 独立坐位准备", LastAToB);
+            Run("B 必须先坐位准备、站起拍高处再进入浅蹲", OrderedB);
+            Run("B 太高提示独立停留且门禁期间不推进", HighFeedbackGate);
+            Run("B 高处未完成组可重试跳过且不串照片", HighRetrySkip);
             Run("B 低处快门后必须站回才计组合照片", CompleteB);
             Run("持续保持与重复快照不能重复收集", NoDuplicates);
             Run("短时无效快照不推进组合", InvalidData);
@@ -77,9 +80,18 @@ namespace RehabPhotoGame.Editor
                 Feed(ready: true); Feed(holding: true); Feed(returning: true, capture: 1);
             }
             public void A() { Focus(); Lower(); Rise(); }
+            public void BHigh()
+            {
+                Session.SetPhotoResources("RehabPhotoGame/Photos/B_High/birds_01", "RehabPhotoGame/Photos/C_Low/flowers_01");
+                Feed(ready: true); Feed(holding: true); Feed(returning: true, capture: 1);
+                Check(Session.Step == S2CombinationStep.HighPhotoFeedbackB, "B 高处没有进入太高提示");
+                for (int i = 0; i < 33 && Session.Step == S2CombinationStep.HighPhotoFeedbackB; i++) Feed(returning: true, capture: 1);
+                Check(Session.Step == S2CombinationStep.StandingPreparation, "B 高处提示没有进入站稳衔接");
+            }
             public void Low(int count = 0)
             {
-                Session.SetPhotoResources("", "RehabPhotoGame/Photos/C_Low/grass_mushrooms_01");
+                if (Session.Step == S2CombinationStep.SeatedPreparationB) BHigh();
+                Session.SetPhotoResources("RehabPhotoGame/Photos/B_High/birds_01", "RehabPhotoGame/Photos/C_Low/flowers_01");
                 Feed(ready: true, completed: count, capture: count);
                 Feed(holding: true, completed: count, capture: count);
                 Feed(returning: true, completed: count, capture: count + 1);
@@ -98,6 +110,8 @@ namespace RehabPhotoGame.Editor
             Check(!settings.IsValid, "超出原型上限仍接受");
             settings.groups_b = 1; settings.transition_reminder_seconds = float.NaN;
             Check(!settings.IsValid, "NaN 仍接受");
+            settings.transition_reminder_seconds = 5; settings.b_high_feedback_seconds = 0;
+            Check(!settings.IsValid, "太高提示允许一闪而过");
         }
         private static void SelectablePlans()
         {
@@ -109,9 +123,9 @@ namespace RehabPhotoGame.Editor
                 a.Session.CompletedPhotos == 1, "仅 A 完成后仍被迫进入 B");
 
             var b = new Trial(2, 1, S2TrainingPlan.BOnly);
-            Check(b.Session.Step == S2CombinationStep.StandingPreparation &&
-                b.Session.RequiredMode == PhotoTrainingMode.ShallowSquat && b.Session.Result.training_plan == "b_only",
-                "仅 B 没有从站立准备开始或计划未记录");
+            Check(b.Session.Step == S2CombinationStep.SeatedPreparationB &&
+                b.Session.RequiredMode == PhotoTrainingMode.SitToStand && b.Session.Result.training_plan == "b_only",
+                "仅 B 没有从坐位准备开始或计划未记录");
             b.Low();
             Check(b.Session.Step == S2CombinationStep.ReturnStanding && b.Session.CompletedPhotos == 0,
                 "仅 B 在站回前提前生成照片");
@@ -154,8 +168,55 @@ namespace RehabPhotoGame.Editor
         private static void LastAToB()
         {
             var t = new Trial(); t.A();
-            Check(t.Session.Step == S2CombinationStep.StandingPreparation && t.Session.RequiredMode == PhotoTrainingMode.ShallowSquat,
-                "最后 A 要求多余坐回");
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && t.Session.RequiredMode == PhotoTrainingMode.SitToStand,
+                "没有进入 B 独立坐位准备");
+            t.Feed(returning: true, capture: 1);
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && !t.Session.Result.pending_high_photo,
+                "把 A 高处照片当作 B 的高处照片");
+        }
+        private static void OrderedB()
+        {
+            var t = new Trial(plan: S2TrainingPlan.BOnly);
+            t.Session.Observe(new S2ActionFrame { Mode = PhotoTrainingMode.ShallowSquat, Valid = true,
+                Reference = true, Ready = true, Returning = true, CaptureSequence = 99 }, true, 0);
+            t.Feed(returning: true, capture: 7);
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && !t.Session.Result.pending_high_photo,
+                "未坐位准备即可用旧快门跳到低处");
+            t.Feed(ready: true, capture: 7);
+            Check(t.Session.Step == S2CombinationStep.RiseHighB, "坐位准备未解锁站起");
+            t.Feed(holding: true, capture: 7); t.Feed(returning: true, capture: 8);
+            Check(t.Session.Result.pending_high_photo && t.Session.CompletedPhotos == 0 &&
+                t.Events.FindAll(e => e.event_type == "combination_high_shutter").Count == 1,
+                "高处丢失或提前生成整组照片");
+        }
+        private static void HighFeedbackGate()
+        {
+            var t = new Trial(plan: S2TrainingPlan.BOnly);
+            t.Feed(ready: true); t.Feed(holding: true); t.Feed(returning: true, capture: 1);
+            for (int i = 0; i < 100; i++) t.Feed(returning: true, capture: 1, allowed: false);
+            Check(t.Session.Step == S2CombinationStep.HighPhotoFeedbackB, "暂停期间推进太高提示");
+            for (int i = 0; i < 100; i++) t.Feed(returning: true, capture: 1, valid: false);
+            Check(t.Session.Step == S2CombinationStep.HighPhotoFeedbackB, "无效数据期间推进提示");
+            for (int i = 0; i < 20; i++) t.Feed(returning: true, capture: 1);
+            Check(t.Session.Step == S2CombinationStep.HighPhotoFeedbackB, "提示未完整展示");
+            for (int i = 0; i < 15 && t.Session.Step == S2CombinationStep.HighPhotoFeedbackB; i++) t.Feed(returning: true, capture: 1);
+            Check(t.Session.Step == S2CombinationStep.StandingPreparation, "恢复后提示无法完成");
+            t.Feed(reference: false);
+            Check(t.Session.Step == S2CombinationStep.StandingPreparation, "没有新站姿参考就进入浅蹲");
+        }
+        private static void HighRetrySkip()
+        {
+            var t = new Trial(b: 2, plan: S2TrainingPlan.BOnly);
+            t.BHigh(); t.Session.Restart(t.Time, "retry_high");
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && !t.Session.Result.pending_high_photo &&
+                t.Session.CompletedPhotos == 0, "重试串接旧高处照片");
+            t.BHigh(); t.Session.Skip(t.Time);
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && !t.Session.Result.pending_high_photo &&
+                t.Session.GroupNumber == 2 && t.Session.CompletedPhotos == 0, "跳组串接旧高处照片");
+            t.Low(); t.Feed(completed: 1, capture: 1, reference: false);
+            Check(t.Session.CompletedPhotos == 1 && t.Session.Result.completed_b == 1 &&
+                t.Session.Result.photos[0].first_resource.Contains("B_High") &&
+                t.Session.Result.photos[0].second_resource.Contains("C_Low"), "双联照片不是高处加低处");
         }
         private static void CompleteB()
         {
@@ -171,9 +232,8 @@ namespace RehabPhotoGame.Editor
             for (int i = 0; i < 20; i++) t.Feed(returning: true, capture: 1);
             Check(t.Session.CompletedPhotos == 1, "持蹲重复收集");
             t.Feed(completed: 1, capture: 1, reference: false);
-            t.Feed(ready: true, completed: 1, capture: 1);
             Check(t.Session.CompletedPhotos == 2, "旧计数重复拍照");
-            t.Low(1); t.Feed(completed: 2, capture: 2, reference: false);
+            t.Low(); t.Feed(completed: 1, capture: 1, reference: false);
             Check(t.Session.CompletedPhotos == 3 && !t.Session.IsRunning, "第二 B 无法完成");
         }
         private static void InvalidData()
@@ -196,7 +256,7 @@ namespace RehabPhotoGame.Editor
         {
             var t = new Trial(); t.A(); t.Low();
             t.Feed(returning: true, capture: 1, version: 2);
-            Check(t.Session.Step == S2CombinationStep.StandingPreparation && t.Session.CompletedPhotos == 1, "重标定丢作品或未回退");
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && t.Session.CompletedPhotos == 1, "重标定丢作品或未回退");
             t = new Trial(); t.Focus(); t.Feed(returning: true, leg: TrainingLeg.Right);
             Check(t.Session.Step == S2CombinationStep.SeatedFocus, "切腿串接旧对焦");
         }
@@ -220,7 +280,7 @@ namespace RehabPhotoGame.Editor
         private static void RetryPendingLow()
         {
             var t = new Trial(); t.A(); t.Low(); t.Session.Restart(t.Time, "user_restart");
-            Check(t.Session.Step == S2CombinationStep.StandingPreparation && t.Session.CompletedPhotos == 1 && !t.Session.Result.pending_low_photo,
+            Check(t.Session.Step == S2CombinationStep.SeatedPreparationB && t.Session.CompletedPhotos == 1 && !t.Session.Result.pending_low_photo,
                 "重试保留未完成低处作品");
         }
         private static void Stop()
@@ -299,7 +359,15 @@ namespace RehabPhotoGame.Editor
             Check(combination.Step == S2CombinationStep.RiseHigh, "真实放下事件未衔接");
             feed(PhotoTrainingMode.SitToStand, 90, 90, 90, 90, 6);
             feed(PhotoTrainingMode.SitToStand, 10, 5, 10, 5, 14);
-            Check(combination.Step == S2CombinationStep.StandingPreparation && combination.CompletedPhotos == 1, "真实坐站未完成 A");
+            Check(combination.Step == S2CombinationStep.SeatedPreparationB && combination.CompletedPhotos == 1, "真实坐站未完成 A");
+            stand.Reset(true); // 等价于 UI 进入 B 时调用既有暂停/继续接口。
+            feed(PhotoTrainingMode.SitToStand, 10, 5, 10, 5, 6);
+            Check(combination.Step == S2CombinationStep.SeatedPreparationB, "站立跳过 B 坐位准备");
+            feed(PhotoTrainingMode.SitToStand, 90, 90, 90, 90, 6);
+            Check(combination.Step == S2CombinationStep.RiseHighB, "B 坐位准备未衔接");
+            feed(PhotoTrainingMode.SitToStand, 10, 5, 10, 5, 30);
+            Check(combination.Step == S2CombinationStep.StandingPreparation && combination.Result.pending_high_photo,
+                "真实 B 高处快门和提示未衔接");
             feed(PhotoTrainingMode.ShallowSquat, 10, 5, 10, 5, 6);
             feed(PhotoTrainingMode.ShallowSquat, 40, 45, 40, 45, 14);
             Check(combination.Step == S2CombinationStep.ReturnStanding && combination.CompletedPhotos == 1, "真实浅蹲未进入回位");
@@ -328,9 +396,9 @@ namespace RehabPhotoGame.Editor
                     Field<Button>(ui, "s2BothButton").gameObject.activeSelf, "S2 训练内容选择入口未显示");
                 Field<Button>(ui, "s2BOnlyButton").onClick.Invoke();
                 Check(Field<S2TrainingPlan>(ui, "s2Plan") == S2TrainingPlan.BOnly &&
-                    Field<PhotoTrainingMode>(ui, "trainingMode") == PhotoTrainingMode.ShallowSquat &&
+                    Field<PhotoTrainingMode>(ui, "trainingMode") == PhotoTrainingMode.SitToStand &&
                     Field<TMPro.TMP_Text>(ui, "targetValueText").text.StartsWith("B "),
-                    "仅 B 选择没有切到浅蹲准备或组数未联动");
+                    "仅 B 选择没有切到坐位准备或组数未联动");
                 Render(ui, "01-s2-preflight-b-only");
                 Field<Button>(ui, "s2BothButton").onClick.Invoke();
                 Check(Field<S2TrainingPlan>(ui, "s2Plan") == S2TrainingPlan.AThenB &&
@@ -362,7 +430,23 @@ namespace RehabPhotoGame.Editor
                 t.Feed(ready: true); t.Feed(holding: true); t.Feed(returning: true, capture: 1);
                 Check(flow.Result.captured_photos == 1 && combination.CompletedPhotos == 1, "A UI 未记录");
                 Render(ui, "02-s2-high-album");
+                int oldVersion = Field<SitToStandRuntime>(ui, "sitToStandTraining").CurrentSnapshot.SessionVersion;
                 Invoke(ui, "ActivateS2Step", false);
+                Check(Field<SitToStandRuntime>(ui, "sitToStandTraining").CurrentSnapshot.SessionVersion > oldVersion &&
+                    !Field<SitToStandRuntime>(ui, "sitToStandTraining").CurrentSnapshot.HasSeatedReference,
+                    "A 到 B 没有清除旧坐姿参考");
+                t.Feed(ready: true); Invoke(ui, "ActivateS2Step", false);
+                t.Feed(holding: true); t.Feed(returning: true, capture: 1);
+                Invoke(ui, "ActivateS2Step", false);
+                Check(combination.Step == S2CombinationStep.HighPhotoFeedbackB && flow.Result.captured_photos == 1,
+                    "B 高处过早计完整组");
+                Check(Field<TrainingVoiceGuide>(ui, "voiceGuide").LastText == "拍得太高了。", "太高语音没有播报");
+                Render(ui, "03-s2-too-high");
+                for (int i = 0; i < 33 && combination.Step == S2CombinationStep.HighPhotoFeedbackB; i++) t.Feed(returning: true, capture: 1);
+                Invoke(ui, "ActivateS2Step", false);
+                Check(Field<PhotoTrainingMode>(ui, "trainingMode") == PhotoTrainingMode.ShallowSquat &&
+                    !Field<SitToStandRuntime>(ui, "sitToStandTraining").CurrentSnapshot.IsModeActive,
+                    "高处到低处模式没有互斥");
                 t.Feed(ready: true); t.Feed(holding: true); t.Feed(returning: true, capture: 1);
                 Check(flow.Result.captured_photos == 1 && combination.Result.pending_low_photo, "B 没等站回");
                 Render(ui, "03-s2-return-standing");
@@ -376,6 +460,8 @@ namespace RehabPhotoGame.Editor
                 Check(File.Exists(Path.Combine(dir, flow.Result.session_id + ".summary.json")), "总结未保存");
                 foreach (var photo in combination.Result.photos)
                 {
+                    if (photo.combination_type == "B")
+                        Check(photo.first_resource.Contains("B_High") && photo.second_resource.Contains("C_Low"), "B 保存了错误素材");
                     Check(photo.image_status == "saved" && File.Exists(Path.Combine(dir, photo.image_file)), "JPG 未保存");
                     var image = new Texture2D(2, 2);
                     try

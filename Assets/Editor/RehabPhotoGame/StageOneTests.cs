@@ -14,6 +14,7 @@ namespace RehabPhotoGame.Editor
             RunLogicTests();
             Run("实际采样接口按当前时钟检测断流", ProcessorFreshness);
             Run("四元数角度提取、左右符号和人物判定一致", QuaternionMeasurements);
+            Run("客户浅蹲日志帧的左右膝角使用同一测量公式", LoggedBilateralShallowSquatAngles);
             Run("单侧小腿掉线不会复制另一侧膝角", CrossLegDropoutDoesNotMirror);
             Run("左右腿坐姿校正映射到同一视觉基准", SharedSeatedPoseCalibration);
             Run("站直后自动解除坐姿视觉锁定", StandingPoseExit);
@@ -22,7 +23,7 @@ namespace RehabPhotoGame.Editor
             Run("下肢突跳需连续帧确认后恢复", LowerBodyJumpGuard);
             Run("远景素材与对焦 Shader 可由 Resources 加载", PhotoResources);
             Run("S1 正式 Canvas 可创建且不显示原始遥测", FormalCanvasSmoke);
-            Debug.Log("[Stage1 tests] PASS: 34 regression scenarios.");
+            Debug.Log("[Stage1 tests] PASS: 35 regression scenarios.");
         }
 
         public static void RunLogicTests()
@@ -523,18 +524,20 @@ namespace RehabPhotoGame.Editor
                 Check(driver.TryMeasureLeg(1, rotations, out thighDeg, out kneeDeg), "右侧坐姿失败");
                 Near(90f, thighDeg); Near(90f, kneeDeg);
                 rotations[6] = Quaternion.AngleAxis(-60f, Vector3.right);
-                rotations[8] = Quaternion.AngleAxis(60f, Vector3.right);
+                rotations[8] = Quaternion.AngleAxis(-60f, Vector3.right);
                 Check(driver.TryMeasureLeg(0, rotations, out thighDeg, out kneeDeg), "左侧伸膝失败");
                 Near(30f, kneeDeg);
                 Check(driver.TryMeasureLeg(1, rotations, out thighDeg, out kneeDeg), "右侧伸膝失败");
                 Near(30f, kneeDeg);
-                driver.ConstrainTargets(rotations, targets, new[] { false, false, false, false, false, true, true, true, true });
-                // 人物与游戏使用同一膝角，避免画面已经伸直而判定仍显示 30°。
-                Near(30f, Quaternion.Angle(targets[5], targets[6]));
-                driver.TryMeasureLeg(0, rotations, out thighDeg, out kneeDeg); Near(30f, kneeDeg);
                 Quaternion q = rotations[8];
                 rotations[8] = new Quaternion(-q.x, -q.y, -q.z, -q.w);
                 driver.TryMeasureLeg(1, rotations, out thighDeg, out kneeDeg); Near(30f, kneeDeg);
+
+                // 人物骨骼驱动继续使用客户当前的右腿视觉方向约定；本次只修游戏测量。
+                rotations[8] = Quaternion.AngleAxis(60f, Vector3.right);
+                driver.ConstrainTargets(rotations, targets, new[] { false, false, false, false, false, true, true, true, true });
+                Near(30f, Quaternion.Angle(targets[5], targets[6]));
+                driver.TryMeasureLeg(0, rotations, out thighDeg, out kneeDeg); Near(30f, kneeDeg);
                 // Exercise the rendered segment directions through a full
                 // seated -> kick -> standing -> half squat transition.
                 driver.ConfigureSeatedLegCalibration(0, 90f, 0f, 90f, 90f, 90f);
@@ -704,6 +707,56 @@ namespace RehabPhotoGame.Editor
                     "切腿期间两腿都应保持共享坐姿");
             }
             finally { UnityEngine.Object.DestroyImmediate(config); }
+        }
+
+        private static void LoggedBilateralShallowSquatAngles()
+        {
+            UnityEditor.SceneManagement.EditorSceneManager.OpenScene(
+                "Assets/City park/Scenes/RehabPhotoGame.unity");
+            MotionCaptureController controller =
+                UnityEngine.Object.FindObjectOfType<MotionCaptureController>();
+            Check(controller != null, "S1 场景缺少 MotionCaptureController");
+
+            MotionCaptureConfig config = controller.Config;
+            var bones = new GameObject[config.deviceCount];
+            var rest = new Quaternion[config.deviceCount];
+            var calibration = new Quaternion[config.deviceCount];
+            var sample = new Quaternion[config.deviceCount];
+            for (int i = 0; i < config.deviceCount; i++)
+            {
+                calibration[i] = sample[i] = Quaternion.identity;
+                bones[i] = GameObject.Find(config.boneNames[i]);
+                rest[i] = bones[i] != null
+                    ? bones[i].transform.localRotation
+                    : Quaternion.identity;
+            }
+
+            // motion_diagnostic_20260916_194454_461.jsonl：站姿标定与截图对应浅蹲帧。
+            calibration[5] = new Quaternion(0.648271143f, 0.339349777f, -0.359353006f, 0.579182029f);
+            calibration[6] = new Quaternion(0.284532100f, 0.563426137f, -0.699177921f, 0.335772008f);
+            calibration[7] = new Quaternion(0.382867068f, -0.607578397f, 0.627364993f, 0.301122159f);
+            calibration[8] = new Quaternion(-0.583108544f, -0.473927408f, 0.456220478f, -0.476697087f);
+            sample[5] = new Quaternion(-0.313537538f, -0.756647885f, 0.257323861f, -0.512798786f);
+            sample[6] = new Quaternion(0.466544747f, 0.214803800f, -0.849702358f, 0.119169205f);
+            sample[7] = new Quaternion(0.271198452f, -0.906713486f, 0.290523738f, 0.141131103f);
+            sample[8] = new Quaternion(-0.461168766f, -0.273609668f, 0.835320890f, -0.121243835f);
+
+            var state = new MotionCaptureState(config.deviceCount);
+            for (int i = 5; i <= 8; i++) state.SetDeviceHasData(i, true);
+            var driver = new LowerBodyPoseDriver(config);
+            Transform avatarRoot = GameObject.Find(config.avatarRootName).transform;
+            driver.TryCalibrate(calibration, bones, rest, avatarRoot.rotation, state);
+            Check(driver.TryMeasureLeg(0, sample, out float leftThigh, out float leftKnee),
+                "客户日志帧左腿测量失败");
+            Check(driver.TryMeasureLeg(1, sample, out float rightThigh, out float rightKnee),
+                "客户日志帧右腿测量失败");
+
+            Near(46.89f, leftThigh);
+            Near(46.52f, rightThigh);
+            Near(102.90f, leftKnee);
+            Near(102.15f, rightKnee);
+            Check(Mathf.Abs(leftKnee - rightKnee) < 1f,
+                $"同一浅蹲帧左右膝角仍不一致：{leftKnee:F2}/{rightKnee:F2}");
         }
 
         private static void StandingPoseExit()

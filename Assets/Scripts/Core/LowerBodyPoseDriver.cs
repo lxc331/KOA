@@ -3,9 +3,9 @@ using UnityEngine;
 /// <summary>
 /// 将 06-09 惯性传感器映射为双腿的解剖运动。
 ///
-/// V1.6 的三维膝角算法对右腿有效，但让左腿在伸直时仍残留约 70°，
-/// 并直接导致左小腿人物模型无法完全抬起。本版恢复 d967ffa 时左腿使用的
-/// 矢状面算法，只保留右腿的三维夹角算法。
+/// 人物骨骼驱动保留当前左右腿各自的视觉解算方式；供游戏与 UI 使用的
+/// 膝关节测量则统一采用矢状面大腿/小腿夹角，避免同一动作被左右两套公式
+/// 计算成相差数十度的结果。
 /// </summary>
 public sealed class LowerBodyPoseDriver
 {
@@ -214,8 +214,8 @@ public sealed class LowerBodyPoseDriver
     }
 
     /// <summary>
-    /// 左腿恢复 d967ffa 的矢状面算法；右腿保留 V1.6 三维骨段夹角。
-    /// 这样分别保留两侧目前实测表现更好的算法，不再强行用同一公式。
+    /// 读取供游戏判定、日志和 UI 显示使用的腿部角度。
+    /// 左右膝都采用同一矢状面骨段夹角；这里不改变 DriveCalf 的人物骨骼驱动。
     /// </summary>
     public bool TryMeasureLeg(int leg, Quaternion[] sensorRotations,
         out float thighAngle, out float kneeAngle)
@@ -241,17 +241,9 @@ public sealed class LowerBodyPoseDriver
         float rawThighAngle = GetSagittalFlexion(
             thighIndex, thighIndex - FirstIndex, sensorRotations);
 
-        if (leg == 0)
-        {
-            // 左腿恢复上一个稳定版本：伸直时可正确回到接近 0°。
-            float calfAngle = GetSagittalFlexion(calfIndex, calfIndex - FirstIndex, sensorRotations);
-            kneeAngle = Mathf.Abs(Mathf.DeltaAngle(rawThighAngle, calfAngle));
-        }
-        else
-        {
-            if (!TryGetRightKneeFlexion3D(sensorRotations, out kneeAngle))
-                return false;
-        }
+        float calfAngle = GetSagittalFlexion(
+            calfIndex, calfIndex - FirstIndex, sensorRotations);
+        kneeAngle = Mathf.Abs(Mathf.DeltaAngle(rawThighAngle, calfAngle));
 
         thighAngle = CorrectThighFlexion(leg, rawThighAngle);
         kneeAngle = CorrectKneeFlexion(leg, kneeAngle);

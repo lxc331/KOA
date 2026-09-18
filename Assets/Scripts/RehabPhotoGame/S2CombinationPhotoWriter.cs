@@ -7,7 +7,7 @@ namespace RehabPhotoGame
     public static class S2CombinationPhotoWriter
     {
         public static Rect ViewRect(string type, bool second) =>
-            new Rect(.1f, second ? (type == "A" ? .2f : 0f) : .1f, .8f, .8f);
+            new Rect(.1f, second ? (type == "A" ? .2f : 0f) : (type == "B" ? .2f : .1f), .8f, .8f);
 
         public static byte[] Encode(S2CombinationPhoto photo)
         {
